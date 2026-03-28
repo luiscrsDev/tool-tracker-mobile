@@ -38,14 +38,14 @@ export const AnalyticsService = {
     try {
       const { data, error } = await supabase
         .from('tools')
-        .select('is_connected, created_at')
+        .select('assigned_tag, created_at')
         .gte('created_at', startDate.toISOString())
         .lte('created_at', endDate.toISOString())
 
       if (error) throw error
 
       const total = data?.length || 0
-      const connected = data?.filter((t: any) => t.is_connected).length || 0
+      const connected = data?.filter((t: any) => t.assigned_tag != null).length || 0
       const uptime = total > 0 ? Math.round((connected / total) * 100) : 0
 
       return {

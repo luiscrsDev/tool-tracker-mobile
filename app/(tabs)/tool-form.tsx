@@ -12,6 +12,14 @@ import { useRouter, useLocalSearchParams } from 'expo-router'
 import { useAuth } from '@/context/AuthContext'
 import { useTools } from '@/context/ToolsContext'
 
+const INITIAL_FORM = {
+  name: '',
+  type: '',
+  value: '',
+  battery: '',
+  status: 'active',
+}
+
 export default function ToolFormScreen() {
   const router = useRouter()
   const { contractor } = useAuth()
@@ -19,14 +27,7 @@ export default function ToolFormScreen() {
   const { toolId } = useLocalSearchParams<{ toolId?: string }>()
 
   const [loading, setLoading] = useState(false)
-  const [formData, setFormData] = useState({
-    name: '',
-    type: '',
-    value: '',
-    battery: '',
-    status: 'active',
-    is_connected: false,
-  })
+  const [formData, setFormData] = useState({ ...INITIAL_FORM })
 
   const isEditing = !!toolId
   const tool = isEditing ? tools.find(t => t.id === toolId) : null
@@ -39,10 +40,12 @@ export default function ToolFormScreen() {
         value: tool.value.toString(),
         battery: tool.battery?.toString() || '',
         status: tool.status,
-        is_connected: tool.is_connected,
       })
+    } else if (!isEditing) {
+      // Reset form when creating new tool (fix: campos não limpavam após salvar)
+      setFormData({ ...INITIAL_FORM })
     }
-  }, [tool])
+  }, [tool, isEditing])
 
   const handleSave = async () => {
     if (!contractor?.id) return
@@ -61,7 +64,6 @@ export default function ToolFormScreen() {
         value: parseFloat(formData.value),
         battery: formData.battery ? parseInt(formData.battery, 10) : null,
         status: formData.status,
-        is_connected: formData.is_connected,
       }
 
       if (isEditing && tool) {
@@ -79,10 +81,6 @@ export default function ToolFormScreen() {
     } finally {
       setLoading(false)
     }
-  }
-
-  const handleCancel = () => {
-    router.back()
   }
 
   return (
@@ -111,13 +109,8 @@ export default function ToolFormScreen() {
           </Text>
           <TextInput
             style={{
-              borderWidth: 1,
-              borderColor: '#ddd',
-              borderRadius: 8,
-              paddingHorizontal: 12,
-              paddingVertical: 10,
-              fontSize: 14,
-              backgroundColor: '#fff',
+              borderWidth: 1, borderColor: '#ddd', borderRadius: 8,
+              paddingHorizontal: 12, paddingVertical: 10, fontSize: 14, backgroundColor: '#fff',
             }}
             placeholder="Ex: Furadeira DeWalt"
             value={formData.name}
@@ -133,13 +126,8 @@ export default function ToolFormScreen() {
           </Text>
           <TextInput
             style={{
-              borderWidth: 1,
-              borderColor: '#ddd',
-              borderRadius: 8,
-              paddingHorizontal: 12,
-              paddingVertical: 10,
-              fontSize: 14,
-              backgroundColor: '#fff',
+              borderWidth: 1, borderColor: '#ddd', borderRadius: 8,
+              paddingHorizontal: 12, paddingVertical: 10, fontSize: 14, backgroundColor: '#fff',
             }}
             placeholder="Ex: Furadeira, Chave, Nível"
             value={formData.type}
@@ -155,13 +143,8 @@ export default function ToolFormScreen() {
           </Text>
           <TextInput
             style={{
-              borderWidth: 1,
-              borderColor: '#ddd',
-              borderRadius: 8,
-              paddingHorizontal: 12,
-              paddingVertical: 10,
-              fontSize: 14,
-              backgroundColor: '#fff',
+              borderWidth: 1, borderColor: '#ddd', borderRadius: 8,
+              paddingHorizontal: 12, paddingVertical: 10, fontSize: 14, backgroundColor: '#fff',
             }}
             placeholder="0.00"
             value={formData.value}
@@ -178,13 +161,8 @@ export default function ToolFormScreen() {
           </Text>
           <TextInput
             style={{
-              borderWidth: 1,
-              borderColor: '#ddd',
-              borderRadius: 8,
-              paddingHorizontal: 12,
-              paddingVertical: 10,
-              fontSize: 14,
-              backgroundColor: '#fff',
+              borderWidth: 1, borderColor: '#ddd', borderRadius: 8,
+              paddingHorizontal: 12, paddingVertical: 10, fontSize: 14, backgroundColor: '#fff',
             }}
             placeholder="0-100"
             value={formData.battery}
@@ -196,7 +174,7 @@ export default function ToolFormScreen() {
         </View>
 
         {/* Status */}
-        <View style={{ marginBottom: 16 }}>
+        <View style={{ marginBottom: 24 }}>
           <Text style={{ fontSize: 13, fontWeight: '600', color: '#666', marginBottom: 8 }}>
             Status
           </Text>
@@ -206,9 +184,7 @@ export default function ToolFormScreen() {
                 key={status}
                 onPress={() => setFormData({ ...formData, status })}
                 style={{
-                  flex: 1,
-                  paddingVertical: 10,
-                  borderRadius: 8,
+                  flex: 1, paddingVertical: 10, borderRadius: 8,
                   borderWidth: 1,
                   borderColor: formData.status === status ? '#2563eb' : '#ddd',
                   backgroundColor: formData.status === status ? '#eff6ff' : '#fff',
@@ -218,8 +194,7 @@ export default function ToolFormScreen() {
               >
                 <Text
                   style={{
-                    fontSize: 12,
-                    fontWeight: '600',
+                    fontSize: 12, fontWeight: '600',
                     color: formData.status === status ? '#2563eb' : '#666',
                   }}
                 >
@@ -230,37 +205,13 @@ export default function ToolFormScreen() {
           </View>
         </View>
 
-        {/* Connection Status */}
-        <View style={{ marginBottom: 24 }}>
-          <TouchableOpacity
-            onPress={() => setFormData({ ...formData, is_connected: !formData.is_connected })}
-            style={{
-              flexDirection: 'row',
-              alignItems: 'center',
-              paddingVertical: 12,
-              paddingHorizontal: 12,
-              backgroundColor: formData.is_connected ? '#d1fae5' : '#fee2e2',
-              borderRadius: 8,
-            }}
-            disabled={loading}
-          >
-            <Text style={{ flex: 1, fontWeight: '600', color: '#333' }}>
-              {formData.is_connected ? '🟢 Conectada' : '🔴 Desconectada'}
-            </Text>
-          </TouchableOpacity>
-        </View>
-
         {/* Buttons */}
         <View style={{ flexDirection: 'row', gap: 12 }}>
           <TouchableOpacity
-            onPress={handleCancel}
+            onPress={() => router.back()}
             style={{
-              flex: 1,
-              paddingVertical: 12,
-              borderRadius: 8,
-              borderWidth: 1,
-              borderColor: '#ddd',
-              alignItems: 'center',
+              flex: 1, paddingVertical: 12, borderRadius: 8,
+              borderWidth: 1, borderColor: '#ddd', alignItems: 'center',
             }}
             disabled={loading}
           >
@@ -270,14 +221,9 @@ export default function ToolFormScreen() {
           <TouchableOpacity
             onPress={handleSave}
             style={{
-              flex: 1,
-              paddingVertical: 12,
-              borderRadius: 8,
-              backgroundColor: loading ? '#999' : '#2563eb',
-              alignItems: 'center',
-              flexDirection: 'row',
-              justifyContent: 'center',
-              gap: 8,
+              flex: 1, paddingVertical: 12, borderRadius: 8,
+              backgroundColor: loading ? '#999' : '#2563eb', alignItems: 'center',
+              flexDirection: 'row', justifyContent: 'center', gap: 8,
             }}
             disabled={loading}
           >

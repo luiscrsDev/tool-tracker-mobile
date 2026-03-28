@@ -1,11 +1,12 @@
 import { useEffect, useState } from 'react'
 import {
   View, Text, TouchableOpacity, ActivityIndicator,
-  FlatList, Modal, TextInput, ScrollView,
+  FlatList, Modal, TextInput, ScrollView, KeyboardAvoidingView, Platform,
 } from 'react-native'
 import { Ionicons } from '@expo/vector-icons'
 import { useBluetooth } from '@/context/BluetoothContext'
 import { useTools } from '@/context/ToolsContext'
+import { useTags } from '@/context/TagsContext'
 import { useAuth } from '@/context/AuthContext'
 
 // UUIDs conhecidos para referência
@@ -25,12 +26,29 @@ interface PairingDevice {
   id: string
   name: string | null
   rssi: number
+  manufacturerData?: string | null
+}
+
+// Returns true for Apple Find My accessories (rotating MAC — must use mfr data as stable key)
+function isAppleFindMy(mfrData?: string | null): boolean {
+  if (!mfrData) return false
+  try {
+    const bytes = Uint8Array.from(atob(mfrData), c => c.charCodeAt(0))
+    return bytes[0] === 0x4C && bytes[1] === 0x00
+  } catch { return false }
+}
+
+function stableTagId(device: PairingDevice): string {
+  return isAppleFindMy(device.manufacturerData) && device.manufacturerData
+    ? device.manufacturerData
+    : device.id
 }
 
 export default function AirTagScreen() {
   const { contractor } = useAuth()
-  const { startScanning, stopScanning, devices, scanning, inspectDevice, selectedDevice, error } = useBluetooth()
-  const { tools, addTool, linkTag } = useTools()
+  const { startScanning, stopScanning, devices, scanning, inspectDevice, readStableId, playSound, playTuyaSound, ringFMDN, provisionEIK, selectedDevice, error } = useBluetooth()
+  const { tools, linkTag } = useTools()
+  const { tags, createTag, refreshTags } = useTags()
 
   const [pairing, setPairing] = useState(false)
   const [beepingId, setBeepingId] = useState<string | null>(null)
@@ -41,6 +59,10 @@ export default function AirTagScreen() {
   const [selectedToolId, setSelectedToolId] = useState<string | null>(null)
   const [toolDropdownOpen, setToolDropdownOpen] = useState(false)
   const [step, setStep] = useState<'confirm' | 'form' | 'done'>('confirm')
+
+  useEffect(() => {
+    if (contractor?.id) refreshTags(contractor.id)
+  }, [contractor?.id])
 
   useEffect(() => {
     return () => { if (scanning) stopScanning() }
@@ -56,7 +78,12 @@ export default function AirTagScreen() {
 
   const renderDeviceCard = (item: PairingDevice, isPaired: boolean, inRange = true) => {
     const signalBars = item.rssi > -60 ? 3 : item.rssi > -80 ? 2 : 1
-    const linkedTool = tools.find(t => t.tag_id === item.id)
+    const proximityLabel = item.rssi > -55 ? '📍 Muito próximo' : item.rssi > -70 ? '🔵 Próximo' : '🔘 Distante'
+    const tagRecord = tags.find(t => t.tag_id === item.id)
+    const linkedTool = tagRecord ? tools.find(t => t.assigned_tag === tagRecord.id) : null
+    const displayName = item.name && item.name !== 'Anonymous'
+      ? item.name
+      : isAppleFindMy(item.manufacturerData) ? 'Find Easy' : item.name ?? 'Desconhecido'
 
     return (
       <TouchableOpacity
@@ -82,7 +109,7 @@ export default function AirTagScreen() {
 
         <View style={{ flex: 1 }}>
           <Text style={{ color: 'white', fontWeight: '700', fontSize: 15 }}>
-            {item.name || 'Dispositivo BLE'}
+            {displayName}
           </Text>
           {isPaired && linkedTool ? (
             <Text style={{ color: '#10B981', fontSize: 11, marginTop: 2 }}>
@@ -90,16 +117,50 @@ export default function AirTagScreen() {
             </Text>
           ) : (
             <Text style={{ color: 'rgba(255,255,255,0.25)', fontSize: 10, marginTop: 2 }}>
-              {item.id}
+              {item.rssi} dBm · {proximityLabel}
             </Text>
           )}
         </View>
+
+        {/* Beep */}
+        <TouchableOpacity
+          onPress={async e => {
+            e.stopPropagation()
+            setBeepingId(item.id)
+            try {
+              if (scanning) await stopScanning()
+              // Tenta FMDN ring autenticado primeiro (se tag tem EIK)
+              const tagRec = tags.find(t => t.tag_id === item.id)
+              if (tagRec?.eik) {
+                const ok = await ringFMDN(item.id, tagRec.eik)
+                if (ok) { setBeepingId(null); return }
+              }
+              // Fallback: protocolos genéricos (playTuyaSound já tenta tudo incluindo Immediate Alert)
+              await playTuyaSound(item.id)
+            } catch { /* não suporta beep */ } finally {
+              setBeepingId(null)
+            }
+          }}
+          disabled={beepingId === item.id}
+          style={{
+            width: 38, height: 38, borderRadius: 10,
+            backgroundColor: beepingId === item.id ? 'rgba(250,204,21,0.2)' : 'rgba(255,255,255,0.06)',
+            alignItems: 'center', justifyContent: 'center',
+            borderWidth: 1, borderColor: beepingId === item.id ? 'rgba(250,204,21,0.4)' : 'rgba(255,255,255,0.08)',
+          }}
+        >
+          {beepingId === item.id
+            ? <ActivityIndicator size="small" color="#FACC15" />
+            : <Ionicons name="volume-high" size={16} color="rgba(255,255,255,0.5)" />
+          }
+        </TouchableOpacity>
 
         {/* Inspect */}
         <TouchableOpacity
           onPress={async e => {
             e.stopPropagation()
             setInspectingId(item.id)
+            if (scanning) await stopScanning()
             const result = await inspectDevice(item.id)
             setInspectingId(null)
             if (result) setInspectResult({ device: item.name || item.id, services: result.services })
@@ -159,20 +220,41 @@ export default function AirTagScreen() {
     setPairError(null)
 
     try {
-      if (selectedToolId) {
-        await linkTag(selectedToolId, sheet.id)
+      // Parar scan ANTES de qualquer operação GATT (Android não permite scan + GATT simultâneo)
+      if (scanning) await stopScanning()
+
+      // Determinar o BLE identifier estável
+      let bleTagId: string
+      if (isAppleFindMy(sheet.manufacturerData)) {
+        console.log('[Pair] Lendo stable ID via GATT...')
+        const gattId = await readStableId(sheet.id)
+        bleTagId = gattId ?? stableTagId(sheet)
+        console.log(`[Pair] tag_id final: ${bleTagId}`)
       } else {
-        // Cria uma nova entrada de tracker
-        await addTool({
-          contractor_id: contractor.id,
-          name: tagName.trim(),
-          type: 'AirTag',
-          value: 29,
-          status: 'active',
-          is_connected: true,
-          battery: 100,
-          tag_id: sheet.id,
-        })
+        bleTagId = stableTagId(sheet)
+      }
+
+      // 1. Provisionar EIK no tracker (FMDN — permite ring autenticado depois)
+      let eik: string | null = null
+      try {
+        console.log('[Pair] Provisionando EIK no tracker...')
+        eik = await provisionEIK(sheet.id)
+        console.log(`[Pair] EIK: ${eik ? 'OK' : 'não suportado'}`)
+      } catch {
+        console.warn('[Pair] EIK provisioning failed, continuing without')
+      }
+
+      // 2. Cria/atualiza o registro na tabela tags
+      const tagRecord = await createTag({
+        contractor_id: contractor.id,
+        name: tagName.trim(),
+        tag_id: bleTagId,
+        eik,
+      })
+
+      // 2. Se selecionou ferramenta, vincula
+      if (selectedToolId) {
+        await linkTag(selectedToolId, tagRecord.id)
       }
 
       setStep('done')
@@ -187,17 +269,30 @@ export default function AirTagScreen() {
 
   const selectedToolName = tools.find(t => t.id === selectedToolId)?.name
 
-  // Ferramentas com tag vinculado — sempre visíveis independente do scan
-  const pairedTools = tools.filter(t => t.tag_id)
+  // Tags já registradas — BLE identifiers conhecidos
+  const registeredBleIds = new Set(tags.map(t => t.tag_id))
+
+  // Ferramentas com tag vinculado
+  const pairedTools = tools.filter(t => t.assigned_tag)
 
   // Dispositivos encontrados no scan que ainda não estão pareados
-  const pairedTagIds = new Set(pairedTools.map(t => t.tag_id))
-  const unpairedDevices = devices.filter(d =>
-    d.name?.toLowerCase().includes('find easy') && !pairedTagIds.has(d.id),
-  )
+  // Só mostra: devices com nome contendo "find" OU devices Apple Find My (mfr 4C00)
+  const pairedTagIds = registeredBleIds
+  const unpairedDevices = devices
+    .filter(d => {
+      const tagId = stableTagId(d)
+      if (pairedTagIds.has(tagId) || pairedTagIds.has(d.id)) return false
+      return (d.name?.toLowerCase().includes('find') ?? false) || isAppleFindMy(d.manufacturerData)
+    })
+    .sort((a, b) => b.rssi - a.rssi) // strongest signal (closest) first
 
   // Para cada ferramenta pareada, pega o sinal atual do scan (se estiver visível)
-  const scannedById = new Map(devices.map(d => [d.id, d]))
+  // Indexa por device.id E por manufacturerData para achar Apple devices com MAC rotativo
+  const scannedById = new Map<string, typeof devices[0]>()
+  devices.forEach(d => {
+    scannedById.set(d.id, d)
+    if (d.manufacturerData) scannedById.set(d.manufacturerData, d)
+  })
 
   return (
     <View style={{ flex: 1, backgroundColor: '#0F172A' }}>
@@ -251,17 +346,17 @@ export default function AirTagScreen() {
           </>
         )}
 
-        {/* Pareados — sempre visíveis, com sinal se encontrado no scan */}
-        {pairedTools.length > 0 && (
+        {/* Tags registradas — sempre visíveis, com sinal se encontrado no scan */}
+        {tags.length > 0 && (
           <>
             <Text style={{ color: 'rgba(255,255,255,0.3)', fontSize: 11, fontWeight: '700', letterSpacing: 1, marginTop: unpairedDevices.length > 0 ? 16 : 0, marginBottom: 10 }}>
-              JÁ PAREADOS
+              TAGS REGISTRADAS
             </Text>
-            {pairedTools.map(tool => {
-              const scanned = scannedById.get(tool.tag_id!)
+            {tags.map(tag => {
+              const scanned = scannedById.get(tag.tag_id)
               const fakeDevice: PairingDevice = {
-                id: tool.tag_id!,
-                name: tool.name,
+                id: tag.tag_id,
+                name: tag.name,
                 rssi: scanned?.rssi ?? -100,
               }
               return renderDeviceCard(fakeDevice, true, scanned != null)
@@ -270,7 +365,7 @@ export default function AirTagScreen() {
         )}
 
         {/* Empty state */}
-        {unpairedDevices.length === 0 && pairedTools.length === 0 && (
+        {unpairedDevices.length === 0 && tags.length === 0 && (
           <View style={{ alignItems: 'center', paddingTop: 60 }}>
             {scanning
               ? <><ActivityIndicator color="#2563EB" size="large" /><Text style={{ color: 'rgba(255,255,255,0.4)', marginTop: 16, fontSize: 14 }}>Procurando dispositivos...</Text></>
@@ -340,13 +435,16 @@ export default function AirTagScreen() {
 
       {/* ── Pairing Bottom Sheet ── */}
       <Modal visible={!!sheet} transparent animationType="slide" onRequestClose={closeSheet}>
+        <KeyboardAvoidingView
+          style={{ flex: 1 }}
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        >
         <TouchableOpacity style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.6)' }} activeOpacity={1} onPress={closeSheet} />
 
         <View style={{
           backgroundColor: '#1E293B', borderTopLeftRadius: 28, borderTopRightRadius: 28,
           padding: 28, paddingBottom: 44,
           borderTopWidth: 1, borderTopColor: 'rgba(255,255,255,0.08)',
-          position: 'absolute', bottom: 0, left: 0, right: 0,
         }}>
           {/* Handle */}
           <View style={{ width: 36, height: 4, borderRadius: 2, backgroundColor: 'rgba(255,255,255,0.15)', alignSelf: 'center', marginBottom: 24 }} />
@@ -476,13 +574,13 @@ export default function AirTagScreen() {
                   >
                     <Text style={{ color: 'rgba(255,255,255,0.3)', fontSize: 14 }}>Nenhuma (só parear)</Text>
                   </TouchableOpacity>
-                  {tools.map((tool, i) => (
+                  {tools.filter(t => !t.assigned_tag).map((tool, i, arr) => (
                     <TouchableOpacity
                       key={tool.id}
                       onPress={() => { setSelectedToolId(tool.id); setToolDropdownOpen(false) }}
                       style={{
                         paddingHorizontal: 16, paddingVertical: 12,
-                        borderBottomWidth: i < tools.length - 1 ? 1 : 0,
+                        borderBottomWidth: i < arr.length - 1 ? 1 : 0,
                         borderBottomColor: 'rgba(255,255,255,0.06)',
                         backgroundColor: selectedToolId === tool.id ? 'rgba(37,99,235,0.15)' : 'transparent',
                         flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
@@ -495,9 +593,9 @@ export default function AirTagScreen() {
                       {selectedToolId === tool.id && <Ionicons name="checkmark-circle" size={18} color="#2563EB" />}
                     </TouchableOpacity>
                   ))}
-                  {tools.length === 0 && (
+                  {tools.filter(t => !t.assigned_tag).length === 0 && (
                     <View style={{ paddingHorizontal: 16, paddingVertical: 12 }}>
-                      <Text style={{ color: 'rgba(255,255,255,0.3)', fontSize: 13 }}>Nenhuma ferramenta cadastrada</Text>
+                      <Text style={{ color: 'rgba(255,255,255,0.3)', fontSize: 13 }}>Nenhuma ferramenta disponível</Text>
                     </View>
                   )}
                 </View>
@@ -555,6 +653,7 @@ export default function AirTagScreen() {
             </View>
           )}
         </View>
+        </KeyboardAvoidingView>
       </Modal>
     </View>
   )

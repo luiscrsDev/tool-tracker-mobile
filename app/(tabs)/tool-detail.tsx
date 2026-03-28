@@ -10,6 +10,7 @@ import {
 } from 'react-native'
 import { useLocalSearchParams, useRouter } from 'expo-router'
 import { useTools } from '@/context/ToolsContext'
+import { useTags } from '@/context/TagsContext'
 import { useLocation } from '@/context/LocationContext'
 import { supabase } from '@/lib/supabase'
 
@@ -25,14 +26,17 @@ interface LocationRecord {
 export default function ToolDetailScreen() {
   const { toolId } = useLocalSearchParams<{ toolId: string }>()
   const router = useRouter()
-  const { tools, deleteTool } = useTools()
+  const { tools, deleteTool, unlinkTag } = useTools()
+  const { getTagById } = useTags()
   const { allToolLocations, trackedTools } = useLocation()
   const [recentHistory, setRecentHistory] = useState<LocationRecord[]>([])
   const [loadingHistory, setLoadingHistory] = useState(false)
 
   const tool = tools.find(t => t.id === toolId)
+  const tag = tool?.assigned_tag ? getTagById(tool.assigned_tag) : null
   const lastLocation = allToolLocations.get(toolId ?? '') || tool?.last_seen_location
   const isTracking = trackedTools.some(t => t.id === toolId)
+  const isConnected = !!tool?.assigned_tag
 
   useEffect(() => {
     if (toolId) loadRecentHistory()
@@ -64,13 +68,32 @@ export default function ToolDetailScreen() {
         onPress: async () => {
           try {
             await deleteTool(toolId!)
-            router.back()
+            // Fix: navega para lista de ferramentas, não dashboard
+            router.replace('/(tabs)/tools')
           } catch {
             Alert.alert('Erro', 'Falha ao deletar ferramenta')
           }
         },
       },
     ])
+  }
+
+  const handleUnlink = () => {
+    Alert.alert(
+      'Desvincular Tag?',
+      `Remover o tracker "${tag?.name || 'Tag'}" de "${tool?.name}"?`,
+      [
+        { text: 'Cancelar', style: 'cancel' },
+        {
+          text: 'Desvincular',
+          style: 'destructive',
+          onPress: async () => {
+            try { await unlinkTag(tool!.id) }
+            catch { Alert.alert('Erro', 'Falha ao desvincular tag') }
+          },
+        },
+      ]
+    )
   }
 
   const openMap = () => {
@@ -114,18 +137,12 @@ export default function ToolDetailScreen() {
             </Text>
           </View>
           <View style={{
-            paddingHorizontal: 10,
-            paddingVertical: 6,
-            borderRadius: 20,
+            paddingHorizontal: 10, paddingVertical: 6, borderRadius: 20,
             backgroundColor: isTracking ? 'rgba(16,185,129,0.15)' : 'rgba(255,255,255,0.08)',
-            borderWidth: 1,
-            borderColor: isTracking ? 'rgba(16,185,129,0.3)' : 'rgba(255,255,255,0.1)',
+            borderWidth: 1, borderColor: isTracking ? 'rgba(16,185,129,0.3)' : 'rgba(255,255,255,0.1)',
           }}>
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-              <View style={{
-                width: 6, height: 6, borderRadius: 3,
-                backgroundColor: isTracking ? '#10B981' : '#64748B',
-              }} />
+              <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: isTracking ? '#10B981' : '#64748B' }} />
               <Text style={{ fontSize: 10, color: isTracking ? '#10B981' : '#64748B', fontWeight: '700', letterSpacing: 0.5 }}>
                 {isTracking ? 'RASTREANDO' : 'INATIVO'}
               </Text>
@@ -138,13 +155,8 @@ export default function ToolDetailScreen() {
 
         {/* Specs */}
         <View style={{
-          backgroundColor: 'white',
-          borderRadius: 12,
-          padding: 16,
-          shadowColor: '#000',
-          shadowOpacity: 0.05,
-          shadowRadius: 6,
-          elevation: 1,
+          backgroundColor: 'white', borderRadius: 12, padding: 16,
+          shadowColor: '#000', shadowOpacity: 0.05, shadowRadius: 6, elevation: 1,
         }}>
           <Text style={{ fontSize: 10, fontWeight: '700', color: '#94A3B8', letterSpacing: 1, marginBottom: 14 }}>
             ESPECIFICAÇÕES
@@ -153,50 +165,75 @@ export default function ToolDetailScreen() {
             {[
               { label: 'Tipo', value: tool.type?.replace('_', ' ') },
               { label: 'Valor', value: tool.value ? `R$ ${Number(tool.value).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}` : 'Não informado' },
-              { label: 'Status', value: tool.is_connected ? 'Conectada' : 'Desconectada', color: tool.is_connected ? '#10B981' : '#EF4444' },
             ].map((item, i) => (
               <View key={i} style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
                 <Text style={{ fontSize: 13, color: '#64748B' }}>{item.label}</Text>
-                <Text style={{ fontSize: 13, fontWeight: '600', color: item.color ?? '#0F172A' }}>
-                  {item.value}
-                </Text>
+                <Text style={{ fontSize: 13, fontWeight: '600', color: '#0F172A' }}>{item.value}</Text>
               </View>
             ))}
 
             {/* Battery */}
-            {tool.battery !== null && tool.battery !== undefined && (
+            {tool.battery != null && (
               <View>
                 <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
                   <Text style={{ fontSize: 13, color: '#64748B' }}>Bateria</Text>
-                  <Text style={{ fontSize: 13, fontWeight: '700', color: batteryColor }}>
-                    {tool.battery}%
-                  </Text>
+                  <Text style={{ fontSize: 13, fontWeight: '700', color: batteryColor }}>{tool.battery}%</Text>
                 </View>
                 <View style={{ height: 6, backgroundColor: '#F1F5F9', borderRadius: 3, overflow: 'hidden' }}>
-                  <View style={{
-                    height: 6,
-                    width: `${tool.battery}%`,
-                    backgroundColor: batteryColor,
-                    borderRadius: 3,
-                  }} />
+                  <View style={{ height: 6, width: `${tool.battery}%`, backgroundColor: batteryColor, borderRadius: 3 }} />
                 </View>
               </View>
             )}
+
+            {/* Tag vinculado */}
+            <View style={{ borderTopWidth: 1, borderTopColor: '#F1F5F9', paddingTop: 12, marginTop: 2 }}>
+              <Text style={{ fontSize: 11, fontWeight: '700', color: '#94A3B8', letterSpacing: 0.5, marginBottom: 8 }}>
+                TAG BLUETOOTH
+              </Text>
+              {isConnected && tag ? (
+                <View style={{
+                  flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+                  backgroundColor: '#F0FDF4', borderRadius: 8, padding: 10,
+                  borderWidth: 1, borderColor: '#BBF7D0',
+                }}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flex: 1 }}>
+                    <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: '#10B981' }} />
+                    <Text style={{ fontSize: 13, fontWeight: '600', color: '#065F46' }}>
+                      {tag.name}
+                    </Text>
+                  </View>
+                  <TouchableOpacity
+                    onPress={handleUnlink}
+                    style={{
+                      paddingHorizontal: 10, paddingVertical: 4, borderRadius: 6,
+                      backgroundColor: '#FEF2F2', borderWidth: 1, borderColor: '#FECACA',
+                    }}
+                  >
+                    <Text style={{ fontSize: 11, color: '#EF4444', fontWeight: '700' }}>Desvincular</Text>
+                  </TouchableOpacity>
+                </View>
+              ) : isConnected ? (
+                <View style={{
+                  flexDirection: 'row', alignItems: 'center', gap: 8,
+                  backgroundColor: '#F0FDF4', borderRadius: 8, padding: 10,
+                  borderWidth: 1, borderColor: '#BBF7D0',
+                }}>
+                  <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: '#10B981' }} />
+                  <Text style={{ fontSize: 13, fontWeight: '600', color: '#065F46' }}>Tag vinculado</Text>
+                </View>
+              ) : (
+                <Text style={{ fontSize: 13, color: '#CBD5E1' }}>Sem tracker vinculado</Text>
+              )}
+            </View>
           </View>
         </View>
 
         {/* Last Location */}
         {lastLocation && (
           <View style={{
-            backgroundColor: 'white',
-            borderRadius: 12,
-            padding: 16,
-            shadowColor: '#000',
-            shadowOpacity: 0.05,
-            shadowRadius: 6,
-            elevation: 1,
-            borderLeftWidth: 3,
-            borderLeftColor: '#2563EB',
+            backgroundColor: 'white', borderRadius: 12, padding: 16,
+            shadowColor: '#000', shadowOpacity: 0.05, shadowRadius: 6, elevation: 1,
+            borderLeftWidth: 3, borderLeftColor: '#2563EB',
           }}>
             <Text style={{ fontSize: 10, fontWeight: '700', color: '#94A3B8', letterSpacing: 1, marginBottom: 14 }}>
               ÚLTIMA LOCALIZAÇÃO
@@ -206,7 +243,7 @@ export default function ToolDetailScreen() {
             </Text>
             {lastLocation.address && (
               <Text style={{ fontSize: 12, color: '#64748B', lineHeight: 18, marginBottom: 10 }}>
-                📮 {lastLocation.address}
+                {lastLocation.address}
               </Text>
             )}
             {lastLocation.timestamp && (
@@ -217,30 +254,19 @@ export default function ToolDetailScreen() {
             <TouchableOpacity
               onPress={openMap}
               style={{
-                backgroundColor: '#EFF6FF',
-                borderRadius: 8,
-                paddingVertical: 10,
-                alignItems: 'center',
-                borderWidth: 1,
-                borderColor: '#BFDBFE',
+                backgroundColor: '#EFF6FF', borderRadius: 8, paddingVertical: 10,
+                alignItems: 'center', borderWidth: 1, borderColor: '#BFDBFE',
               }}
             >
-              <Text style={{ color: '#2563EB', fontWeight: '700', fontSize: 12 }}>
-                🗺 Ver no Google Maps
-              </Text>
+              <Text style={{ color: '#2563EB', fontWeight: '700', fontSize: 12 }}>Ver no Google Maps</Text>
             </TouchableOpacity>
           </View>
         )}
 
         {/* Recent History */}
         <View style={{
-          backgroundColor: 'white',
-          borderRadius: 12,
-          padding: 16,
-          shadowColor: '#000',
-          shadowOpacity: 0.05,
-          shadowRadius: 6,
-          elevation: 1,
+          backgroundColor: 'white', borderRadius: 12, padding: 16,
+          shadowColor: '#000', shadowOpacity: 0.05, shadowRadius: 6, elevation: 1,
         }}>
           <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
             <Text style={{ fontSize: 10, fontWeight: '700', color: '#94A3B8', letterSpacing: 1 }}>
@@ -261,9 +287,7 @@ export default function ToolDetailScreen() {
             <View style={{ gap: 10 }}>
               {recentHistory.map((record, i) => (
                 <View key={record.id} style={{
-                  flexDirection: 'row',
-                  gap: 10,
-                  alignItems: 'flex-start',
+                  flexDirection: 'row', gap: 10, alignItems: 'flex-start',
                   paddingBottom: i < recentHistory.length - 1 ? 10 : 0,
                   borderBottomWidth: i < recentHistory.length - 1 ? 1 : 0,
                   borderBottomColor: '#F1F5F9',
@@ -296,28 +320,19 @@ export default function ToolDetailScreen() {
         <View style={{ gap: 10, marginBottom: 8 }}>
           <TouchableOpacity
             onPress={() => router.push(`/(tabs)/tool-form?toolId=${tool.id}`)}
-            style={{
-              backgroundColor: '#2563EB',
-              borderRadius: 12,
-              paddingVertical: 14,
-              alignItems: 'center',
-            }}
+            style={{ backgroundColor: '#2563EB', borderRadius: 12, paddingVertical: 14, alignItems: 'center' }}
           >
-            <Text style={{ color: 'white', fontWeight: '700', fontSize: 14 }}>✏️ Editar Ferramenta</Text>
+            <Text style={{ color: 'white', fontWeight: '700', fontSize: 14 }}>Editar Ferramenta</Text>
           </TouchableOpacity>
 
           <TouchableOpacity
             onPress={handleDelete}
             style={{
-              backgroundColor: '#FEF2F2',
-              borderRadius: 12,
-              paddingVertical: 14,
-              alignItems: 'center',
-              borderWidth: 1,
-              borderColor: '#FECACA',
+              backgroundColor: '#FEF2F2', borderRadius: 12, paddingVertical: 14,
+              alignItems: 'center', borderWidth: 1, borderColor: '#FECACA',
             }}
           >
-            <Text style={{ color: '#EF4444', fontWeight: '700', fontSize: 14 }}>🗑 Deletar Ferramenta</Text>
+            <Text style={{ color: '#EF4444', fontWeight: '700', fontSize: 14 }}>Deletar Ferramenta</Text>
           </TouchableOpacity>
         </View>
       </ScrollView>

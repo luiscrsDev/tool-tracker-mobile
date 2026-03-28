@@ -77,8 +77,8 @@ export function AdminProvider({ children }: { children: React.ReactNode }) {
       const tools = await retryWithBackoff(async () => {
         const { data, error: toolError } = await supabase
           .from('tools')
-          .select('id, is_connected', { count: 'exact' })
-          .eq('is_connected', true)
+          .select('id, assigned_tag', { count: 'exact' })
+          .not('assigned_tag', 'is', null)
 
         if (toolError) throw toolError
         return data || []

@@ -22,6 +22,21 @@ export interface MonitoredTool {
   contractorId: string
 }
 
+export interface DetectionResult {
+  toolId: string
+  latitude: number
+  longitude: number
+  accuracy: number | null
+  timestamp: string
+}
+
+// Callback registered by LocationContext to update UI on beacon detection
+let onDetectionCallback: ((result: DetectionResult) => void) | null = null
+
+export function setOnDetectionCallback(cb: ((result: DetectionResult) => void) | null): void {
+  onDetectionCallback = cb
+}
+
 // tagId (BLE MAC) → tool info
 const monitoredTrackers = new Map<string, MonitoredTool>()
 
@@ -87,6 +102,7 @@ async function saveDetection(tagId: string, tool: MonitoredTool): Promise<void> 
 
     lastSaved.set(tagId, Date.now())
     console.log(`[BLE Monitor] ✅ ${tool.toolName} (${tagId}) → ${latitude.toFixed(5)}, ${longitude.toFixed(5)}`)
+    onDetectionCallback?.({ toolId: tool.toolId, latitude, longitude, accuracy: accuracy ?? null, timestamp })
   } catch (err) {
     console.error(`[BLE Monitor] ❌ Erro ao salvar ${tool.toolId}:`, err)
   }
@@ -94,8 +110,26 @@ async function saveDetection(tagId: string, tool: MonitoredTool): Promise<void> 
 
 // ─── Scan callback ────────────────────────────────────────────────────────────
 
-function onDeviceFound(deviceId: string): void {
-  const tool = monitoredTrackers.get(deviceId)
+function onDeviceFound(deviceId: string, manufacturerData?: string): void {
+  // Try by device ID (MAC) first — works for static-MAC trackers (e.g. TY)
+  let tool = monitoredTrackers.get(deviceId)
+  let resolvedKey = deviceId
+
+  // Fallback: match by manufacturer data — needed for Apple Find My devices
+  // that rotate their MAC address. tag_id was stored as mfr data during pairing.
+  if (!tool && manufacturerData) {
+    for (const [key, t] of monitoredTrackers.entries()) {
+      if (key === manufacturerData) {
+        tool = t
+        resolvedKey = key
+        // Cache current MAC → same tool, avoids repeated lookup within session
+        monitoredTrackers.set(deviceId, t)
+        console.log(`[BLE Monitor] 🔄 MAC atualizado: ${deviceId} → ${t.toolName}`)
+        break
+      }
+    }
+  }
+
   if (!tool) return
 
   const now = Date.now()
@@ -155,13 +189,13 @@ function startMonitoring(): void {
     // Filter by Find Easy service UUID so iOS allows scanning in background.
     // Android ignores this filter at the radio level but still receives all
     // advertisements — the UUID filter is applied in software on Android.
-    manager.startDeviceScan([FIND_EASY_SERVICE_UUID], { allowDuplicates: false }, (error, device) => {
+    manager.startDeviceScan(null, { allowDuplicates: true }, (error, device) => {
       if (error) {
         console.warn('[BLE Monitor] Scan error:', error.message)
         return
       }
       if (device?.id) {
-        onDeviceFound(device.id)
+        onDeviceFound(device.id, device.manufacturerData ?? undefined)
       }
     })
     isScanning = true

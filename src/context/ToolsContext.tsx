@@ -13,7 +13,8 @@ interface ToolsContextType {
   addTool: (tool: Omit<Tool, 'id' | 'created_at' | 'updated_at'>) => Promise<void>
   updateTool: (id: string, updates: Partial<Tool>) => Promise<void>
   deleteTool: (id: string) => Promise<void>
-  linkTag: (toolId: string, tagId: string) => Promise<void>
+  linkTag: (toolId: string, tagRecordId: string) => Promise<void>
+  unlinkTag: (toolId: string) => Promise<void>
 }
 
 const ToolsContext = createContext<ToolsContextType | undefined>(undefined)
@@ -28,20 +29,15 @@ export function ToolsProvider({ children }: { children: React.ReactNode }) {
       setLoading(true)
       setError(null)
 
-      // Try cache first (3 min TTL)
       const cacheKey = `tools:${contractorId}`
       const cached = await CacheService.get<Tool[]>(cacheKey, { ttl: 3 * 60 * 1000 })
 
       let data: Tool[] | null = cached || null
 
       if (!cached) {
-        // Check network before querying
         const isOnline = await NetworkService.isOnline()
-        if (!isOnline) {
-          throw new Error('Network error')
-        }
+        if (!isOnline) throw new Error('Network error')
 
-        // Cache miss, query Supabase with retry
         const result = await retryWithBackoff(async () => {
           const { data: queryData, error: queryError } = await supabase
             .from('tools')
@@ -51,7 +47,7 @@ export function ToolsProvider({ children }: { children: React.ReactNode }) {
 
           if (queryError) throw queryError
           return queryData || []
-        }, 2) // 2 attempts for read operations
+        }, 2)
 
         data = result
         await CacheService.set(cacheKey, data)
@@ -80,7 +76,7 @@ export function ToolsProvider({ children }: { children: React.ReactNode }) {
 
         if (insertError) throw insertError
         return result
-      }, 3) // 3 attempts for write operations
+      }, 3)
 
       if (data) {
         setTools([...tools, data[0]])
@@ -107,13 +103,11 @@ export function ToolsProvider({ children }: { children: React.ReactNode }) {
           .select()
 
         if (updateError) throw updateError
-        if (!updated || updated.length === 0) throw new Error('Nenhuma linha atualizada — verifique as permissões no banco')
+        if (!updated || updated.length === 0) throw new Error('Nenhuma linha atualizada')
       }, 3)
 
       const tool = tools.find(t => t.id === id)
-      if (tool) {
-        await CacheService.invalidate(`tools:${tool.contractor_id}`)
-      }
+      if (tool) await CacheService.invalidate(`tools:${tool.contractor_id}`)
       setTools(tools.map(t => (t.id === id ? { ...t, ...updates } : t)))
       console.log('✅ Tool updated:', id)
     } catch (err) {
@@ -129,18 +123,12 @@ export function ToolsProvider({ children }: { children: React.ReactNode }) {
       setError(null)
 
       await retryWithBackoff(async () => {
-        const { error: deleteError } = await supabase
-          .from('tools')
-          .delete()
-          .eq('id', id)
-
+        const { error: deleteError } = await supabase.from('tools').delete().eq('id', id)
         if (deleteError) throw deleteError
       }, 3)
 
       const tool = tools.find(t => t.id === id)
-      if (tool) {
-        await CacheService.invalidate(`tools:${tool.contractor_id}`)
-      }
+      if (tool) await CacheService.invalidate(`tools:${tool.contractor_id}`)
       setTools(tools.filter(t => t.id !== id))
       console.log('✅ Tool deleted:', id)
     } catch (err) {
@@ -151,35 +139,56 @@ export function ToolsProvider({ children }: { children: React.ReactNode }) {
     }
   }
 
-  const linkTag = async (toolId: string, tagId: string) => {
-    // 1. Atualiza no Supabase
+  const linkTag = async (toolId: string, tagRecordId: string) => {
+    // 1. Remove assigned_tag de qualquer outra ferramenta com esse tag
+    await supabase
+      .from('tools')
+      .update({ assigned_tag: null })
+      .eq('assigned_tag', tagRecordId)
+      .neq('id', toolId)
+
+    // 2. Vincula
     const { data, error: sbError } = await supabase
       .from('tools')
-      .update({ tag_id: tagId, is_connected: true })
+      .update({ assigned_tag: tagRecordId })
       .eq('id', toolId)
-      .select('id, tag_id')
+      .select('id, assigned_tag')
 
     if (sbError) throw new Error(sbError.message)
     if (!data || data.length === 0) throw new Error('Ferramenta não encontrada')
-    if (data[0].tag_id !== tagId) throw new Error(`Supabase não salvou tag_id (retornou: ${data[0].tag_id})`)
 
-    // 2. Atualiza estado local diretamente — sem passar pelo cache
-    setTools(prev => prev.map(t => t.id === toolId ? { ...t, tag_id: tagId, is_connected: true } : t))
+    // 3. Atualiza estado local
+    setTools(prev => prev.map(t => {
+      if (t.id === toolId) return { ...t, assigned_tag: tagRecordId }
+      if (t.assigned_tag === tagRecordId) return { ...t, assigned_tag: null }
+      return t
+    }))
 
-    console.log(`✅ linkTag: ferramenta ${toolId} → tag ${tagId}`)
+    await CacheService.invalidatePattern('tools:')
+    console.log(`✅ linkTag: ferramenta ${toolId} → tag ${tagRecordId}`)
+  }
+
+  const unlinkTag = async (toolId: string) => {
+    const { error: sbError } = await supabase
+      .from('tools')
+      .update({ assigned_tag: null })
+      .eq('id', toolId)
+
+    if (sbError) throw new Error(sbError.message)
+
+    setTools(prev => prev.map(t =>
+      t.id === toolId ? { ...t, assigned_tag: null } : t
+    ))
+
+    await CacheService.invalidatePattern('tools:')
+    console.log(`✅ unlinkTag: ferramenta ${toolId} desvinculada`)
   }
 
   return (
     <ToolsContext.Provider
       value={{
-        tools,
-        loading,
-        error,
-        refreshTools,
-        addTool,
-        updateTool,
-        deleteTool,
-        linkTag,
+        tools, loading, error,
+        refreshTools, addTool, updateTool, deleteTool, linkTag, unlinkTag,
       }}
     >
       {children}
@@ -189,8 +198,6 @@ export function ToolsProvider({ children }: { children: React.ReactNode }) {
 
 export function useTools() {
   const context = useContext(ToolsContext)
-  if (!context) {
-    throw new Error('useTools must be used within ToolsProvider')
-  }
+  if (!context) throw new Error('useTools must be used within ToolsProvider')
   return context
 }

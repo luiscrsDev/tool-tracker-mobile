@@ -97,7 +97,7 @@ export default function LocationsScreen() {
           >
             📍 {LocationService.formatLocation(location)}
           </Text>
-          {location.accuracy && (
+          {location.accuracy != null && (
             <Text style={{ fontSize: 11, color: '#1e40af', marginBottom: 2 }}>
               Precisão: ±{location.accuracy.toFixed(1)}m
             </Text>

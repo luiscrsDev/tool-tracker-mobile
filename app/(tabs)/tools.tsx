@@ -33,8 +33,8 @@ export default function ToolsScreen() {
   }
 
   const filteredTools = tools.filter(tool => {
-    if (filterBy === 'connected') return tool.is_connected
-    if (filterBy === 'disconnected') return !tool.is_connected
+    if (filterBy === 'connected') return !!tool.assigned_tag
+    if (filterBy === 'disconnected') return !!!tool.assigned_tag
     return true
   })
 
@@ -65,7 +65,7 @@ export default function ToolsScreen() {
         padding: 16,
         marginBottom: 12,
         borderLeftWidth: 4,
-        borderLeftColor: tool.is_connected ? '#10b981' : '#ef4444',
+        borderLeftColor: !!tool.assigned_tag ? '#10b981' : '#ef4444',
       }}
       onPress={() => router.push(`/(tabs)/tool-detail?toolId=${tool.id}`)}
     >
@@ -95,18 +95,18 @@ export default function ToolsScreen() {
               paddingHorizontal: 8,
               paddingVertical: 6,
               borderRadius: 4,
-              backgroundColor: tool.is_connected ? '#d1fae5' : '#fee2e2',
+              backgroundColor: !!tool.assigned_tag ? '#d1fae5' : '#fee2e2',
               alignSelf: 'flex-start',
             }}
           >
             <Text
               style={{
-                color: tool.is_connected ? '#065f46' : '#991b1b',
+                color: !!tool.assigned_tag ? '#065f46' : '#991b1b',
                 fontSize: 11,
                 fontWeight: '600',
               }}
             >
-              {tool.is_connected ? '🟢 Conectada' : '🔴 Desconectada'}
+              {!!tool.assigned_tag ? '🟢 Conectada' : '🔴 Desconectada'}
             </Text>
           </View>
         </View>

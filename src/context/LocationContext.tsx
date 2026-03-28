@@ -5,6 +5,7 @@ import {
   addPersistedTool,
   removePersistedTool,
   getPersistedTools,
+  persistActiveTools,
   startBackgroundLocationUpdates,
   stopBackgroundLocationUpdates,
 } from '@/lib/backgroundTracking'
@@ -12,6 +13,7 @@ import {
   addTrackerToMonitor,
   removeTrackerFromMonitor,
   setMonitoredTrackers,
+  setOnDetectionCallback,
   destroyBleMonitor,
 } from '@/lib/bleMonitoring'
 
@@ -19,6 +21,7 @@ interface TrackedTool {
   id: string
   name: string
   contractorId: string
+  tagId?: string
   location: LocationData | null
   lastUpdated: number
 }
@@ -34,7 +37,7 @@ interface LocationContextType {
   tracking: boolean
   currentLocation: LocationData | null
   error: Error | null
-  startTracking: (toolId: string, toolName: string, contractorId: string) => Promise<void>
+  startTracking: (toolId: string, toolName: string, contractorId: string, tagId?: string) => Promise<void>
   stopTracking: (toolId: string) => Promise<void>
   updateToolLocation: (toolId: string, location: LocationData) => Promise<void>
   getCurrentLocation: () => Promise<LocationData | null>
@@ -80,7 +83,7 @@ export function LocationProvider({ children }: { children: React.ReactNode }) {
 
         const { data, error: insertError } = await supabase.from('location_history').insert({
           tool_id: toolId,
-          contractor_id: contractorId,
+          contractor_id: contractorId || null,
           latitude: location.latitude,
           longitude: location.longitude,
           accuracy: location.accuracy,
@@ -160,7 +163,7 @@ export function LocationProvider({ children }: { children: React.ReactNode }) {
           .eq('id', toolId)
 
         if (updateError) {
-          console.error('❌ Supabase update error:', updateError.message)
+          console.warn('⚠️ Supabase update error (network?):', updateError.message)
         } else {
           console.log(`✅ Last location updated: ${toolId}`)
         }
@@ -212,8 +215,26 @@ export function LocationProvider({ children }: { children: React.ReactNode }) {
 
       console.log(`[LocationContext] Restoring ${persisted.length} tracked tool(s) from storage`)
 
+      // Refresh tag_id from tags table via tools.assigned_tag
+      let enriched = persisted
+      try {
+        const { data: dbTools } = await supabase
+          .from('tools')
+          .select('id, assigned_tag, tags:assigned_tag(tag_id)')
+          .in('id', persisted.map(t => t.id))
+
+        if (dbTools && dbTools.length > 0) {
+          const tagMap = new Map(dbTools.map((t: any) => [t.id, (t.tags as any)?.tag_id ?? undefined]))
+          enriched = persisted.map(t => ({ ...t, tagId: tagMap.get(t.id) ?? t.tagId }))
+          await persistActiveTools(enriched)
+          console.log(`[LocationContext] tag_id refreshed from tags table`)
+        }
+      } catch {
+        console.warn('[LocationContext] Could not refresh tag_id, using cached data')
+      }
+
       // Restore BLE monitors for all tagged tools at once
-      const taggedEntries = persisted
+      const taggedEntries = enriched
         .filter(t => t.tagId)
         .map(t => ({
           tagId: t.tagId!,
@@ -223,11 +244,13 @@ export function LocationProvider({ children }: { children: React.ReactNode }) {
         setMonitoredTrackers(taggedEntries)
       }
 
-      for (const tool of persisted) {
-        await startTracking(tool.id, tool.name, tool.contractorId, tool.tagId).catch(err => {
-          console.warn(`[LocationContext] Could not restore tracking for ${tool.id}:`, err.message)
-        })
-      }
+      await Promise.all(
+        enriched.map(tool =>
+          startTracking(tool.id, tool.name, tool.contractorId, tool.tagId).catch(err => {
+            console.warn(`[LocationContext] Could not restore tracking for ${tool.id}:`, err.message)
+          }),
+        ),
+      )
     }
     restore()
     // Run once on mount only
@@ -236,109 +259,66 @@ export function LocationProvider({ children }: { children: React.ReactNode }) {
 
   const startTracking = useCallback(
     async (toolId: string, toolName: string, contractorId: string, tagId?: string) => {
-      console.log(`\n🔍 START TRACKING: ${toolName} by ${contractorId}`)
+      console.log(`\n🔍 START TRACKING: ${toolName} (${tagId ? 'BLE' : 'GPS'})`)
       try {
         setError(null)
 
-        // STEP 1: Request permission
-        console.log(`[1/6] Requesting permission...`)
         const hasPermission = await LocationService.requestPermissions()
-        console.log(`[1✓] Permission: ${hasPermission}`)
+        if (!hasPermission) throw new Error('Permissão de localização foi recusada')
 
-        if (!hasPermission) {
-          throw new Error('Permissão de localização foi recusada')
-        }
+        // Add to tracked list (skip duplicates)
+        setTrackedTools(prev => {
+          if (prev.some(t => t.id === toolId)) return prev
+          return [...prev, { id: toolId, name: toolName, contractorId, tagId, location: null, lastUpdated: 0 }]
+        })
 
-        // STEP 2: Add to list
-        console.log(`[2/6] Adding tool to list...`)
-        setTrackedTools(prev => [
-          ...prev,
-          {
-            id: toolId,
-            name: toolName,
-            contractorId,
-            location: null,
-            lastUpdated: 0,
-          },
-        ])
-        console.log(`[2✓] Tool added`)
-
-        // STEP 3: Get initial location
-        console.log(`[3/6] Getting location...`)
-        const initialLocation = await LocationService.getCurrentLocation()
-        console.log(`[3✓] Location:`, initialLocation?.latitude, initialLocation?.longitude)
-
-        // STEP 4: Update locally
-        if (initialLocation) {
-          console.log(`[4/6] Updating local state...`)
-          setTrackedTools(prev =>
-            prev.map(tool =>
-              tool.id === toolId
-                ? { ...tool, location: initialLocation, lastUpdated: Date.now() }
-                : tool,
-            ),
-          )
-          console.log(`[4✓] Local updated`)
-
-          // STEP 5: Update last_seen only (sem salvar no histórico — watch fará isso com GPS fresco)
-          console.log(`[5/6] Syncing last_seen to Supabase (no history)...`)
-          supabase
-            .from('tools')
-            .update({
+        if (tagId) {
+          // ── BLE tool ──────────────────────────────────────────────
+          // Location is ONLY valid when beacon is physically detected nearby.
+          // bleMonitoring.ts saves GPS + updates Supabase on beacon detection.
+          // Do NOT set initial location from phone GPS here.
+          addTrackerToMonitor(tagId, { toolId, toolName, contractorId })
+          setTracking(true)
+          console.log(`✅ RASTREAMENTO ATIVO (BLE): ${toolName} [${tagId}]\n`)
+        } else {
+          // ── GPS tool ──────────────────────────────────────────────
+          // Location follows the contractor's phone.
+          const initialLocation = await LocationService.getCurrentLocation()
+          if (initialLocation) {
+            setTrackedTools(prev =>
+              prev.map(t => t.id === toolId ? { ...t, location: initialLocation, lastUpdated: Date.now() } : t),
+            )
+            void supabase.from('tools').update({
               last_seen_location: {
                 latitude: initialLocation.latitude,
                 longitude: initialLocation.longitude,
                 address: initialLocation.address,
                 timestamp: new Date(initialLocation.timestamp).toISOString(),
               },
-            })
-            .eq('id', toolId)
-            .then(() => console.log(`[5✓] Last seen updated`))
-            .catch((err: Error) => console.warn(`[5⚠] Supabase error (ignored):`, err.message))
-        }
+            }).eq('id', toolId)
+          }
 
-        // STEP 6: Start foreground watch
-        console.log(`[6/6] Starting watch...`)
-        const watchId = await LocationService.watchPosition(
-          location => {
-            try {
+          const watchId = await LocationService.watchPosition(
+            location => {
               setTrackedTools(prev =>
-                prev.map(tool =>
-                  tool.id === toolId ? { ...tool, location, lastUpdated: Date.now() } : tool,
-                ),
+                prev.map(t => t.id === toolId ? { ...t, location, lastUpdated: Date.now() } : t),
               )
               updateToolLocation(toolId, location).catch(() => {})
-            } catch (err) {
-              console.error('❌ Error in watch callback:', err)
-              setError(err instanceof Error ? err : new Error(String(err)))
-            }
-          },
-          err => {
-            console.error('❌ Watch position error:', err.message)
-            setError(err)
-          },
-        )
+            },
+            err => {
+              console.error('❌ Watch position error:', err.message)
+              setError(err)
+            },
+          )
 
-        if (watchId === -1) {
-          throw new Error('Falha ao iniciar rastreamento de posição')
+          if (watchId === -1) throw new Error('Falha ao iniciar rastreamento de posição')
+          watchIds.current.set(toolId, watchId)
+          setTracking(true)
+          console.log(`✅ RASTREAMENTO ATIVO (GPS): ${toolName}\n`)
         }
 
-        watchIds.current.set(toolId, watchId)
-        setTracking(true)
-        console.log(`[6✓] Watch started (ID: ${watchId})\n✅ RASTREAMENTO ATIVO: ${toolName}\n`)
-
-        // Persist to AsyncStorage so background task knows what to track
         await addPersistedTool({ id: toolId, name: toolName, contractorId, tagId })
-
-        // Start BLE monitor for tagged tools (event-driven GPS save)
-        if (tagId) {
-          addTrackerToMonitor(tagId, { toolId, toolName, contractorId })
-        }
-
-        // Start background location updates (keeps foreground service alive + handles GPS-only tools)
-        startBackgroundLocationUpdates().catch(err =>
-          console.warn('[BG] Could not start background updates:', err),
-        )
+        startBackgroundLocationUpdates().catch(() => {})
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err)
         console.error(`\n❌ TRACKING FAILED: ${msg}\n`)
@@ -464,6 +444,31 @@ export function LocationProvider({ children }: { children: React.ReactNode }) {
     } catch (err) {
       console.error('❌ Error in loadLastKnownLocations:', err)
     }
+  }, [])
+
+  // Register BLE detection callback — updates UI when beacon is detected nearby
+  React.useEffect(() => {
+    setOnDetectionCallback(({ toolId, latitude, longitude, accuracy, timestamp }) => {
+      const location: LocationData = {
+        latitude,
+        longitude,
+        accuracy: accuracy ?? 0,
+        altitude: null,
+        heading: null,
+        speed: null,
+        timestamp: new Date(timestamp).getTime(),
+        address: undefined,
+      }
+      setTrackedTools(prev =>
+        prev.map(t => t.id === toolId ? { ...t, location, lastUpdated: Date.now() } : t),
+      )
+      setAllToolLocations(prev => {
+        const next = new Map(prev)
+        next.set(toolId, location)
+        return next
+      })
+    })
+    return () => setOnDetectionCallback(null)
   }, [])
 
   // Cleanup on unmount

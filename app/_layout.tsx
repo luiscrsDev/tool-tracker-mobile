@@ -13,6 +13,7 @@ import { ToolsProvider } from '@/context/ToolsContext'
 import { AlertsProvider } from '@/context/AlertsContext'
 import { BluetoothProvider } from '@/context/BluetoothContext'
 import { LocationProvider } from '@/context/LocationContext'
+import { TagsProvider } from '@/context/TagsContext'
 import { AdminProvider } from '@/context/AdminContext'
 
 function RootLayoutNav() {
@@ -64,15 +65,17 @@ export default function RootLayout() {
   return (
     <AuthProvider>
       <ToolsProvider>
-        <AlertsProvider>
-          <BluetoothProvider>
-            <LocationProvider>
-              <AdminProvider>
-                <RootLayoutNav />
-              </AdminProvider>
-            </LocationProvider>
-          </BluetoothProvider>
-        </AlertsProvider>
+        <TagsProvider>
+          <AlertsProvider>
+            <BluetoothProvider>
+              <LocationProvider>
+                <AdminProvider>
+                  <RootLayoutNav />
+                </AdminProvider>
+              </LocationProvider>
+            </BluetoothProvider>
+          </AlertsProvider>
+        </TagsProvider>
       </ToolsProvider>
     </AuthProvider>
   )

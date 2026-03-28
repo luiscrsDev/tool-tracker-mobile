@@ -11,6 +11,7 @@ import {
 import { Ionicons } from '@expo/vector-icons'
 import { useFocusEffect } from '@react-navigation/native'
 import { useTools } from '@/context/ToolsContext'
+import { useTags } from '@/context/TagsContext'
 import { useLocation } from '@/context/LocationContext'
 import { useAuth } from '@/context/AuthContext'
 import { useBluetooth } from '@/context/BluetoothContext'
@@ -18,6 +19,7 @@ import { LocationService } from '@/lib/location'
 
 export default function TrackingScreen() {
   const { tools, refreshTools } = useTools()
+  const { getTagById } = useTags()
   const { trackedTools, startTracking, stopTracking, loadLastKnownLocations, getToolLastLocation } = useLocation()
   const { contractor } = useAuth()
   const { playTuyaSound } = useBluetooth()
@@ -41,12 +43,22 @@ export default function TrackingScreen() {
     }
   }, [tools, loadLastKnownLocations])
 
+  // Refresh BLE tool locations from Supabase every 30s
+  useEffect(() => {
+    if (tools.length === 0) return
+    const interval = setInterval(() => {
+      loadLastKnownLocations(tools.map(t => t.id))
+    }, 30000)
+    return () => clearInterval(interval)
+  }, [tools, loadLastKnownLocations])
+
   const handleStartTracking = async (toolId: string, toolName: string) => {
     try {
       setLoading(true)
       console.log(`🔍 Starting tracking for: ${toolName}`)
       const tool = tools.find(t => t.id === toolId)
-      await startTracking(toolId, toolName, contractor?.id || '', tool?.tag_id || undefined)
+      const tag = tool?.assigned_tag ? getTagById(tool.assigned_tag) : null
+      await startTracking(toolId, toolName, contractor?.id || '', tag?.tag_id || undefined)
       Alert.alert('Sucesso', `Rastreamento iniciado para ${toolName}`)
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : 'Erro desconhecido'
@@ -217,31 +229,36 @@ export default function TrackingScreen() {
           )}
 
           {/* Beep — só aparece para ferramentas com tag BLE pareado */}
-          {tool.tag_id && (
-            <TouchableOpacity
-              onPress={async () => {
-                setBeepingId(tool.tag_id)
-                await playTuyaSound(tool.tag_id)
-                setBeepingId(null)
-              }}
-              disabled={beepingId === tool.tag_id}
-              style={{
-                width: 42,
-                paddingVertical: 10,
-                borderRadius: 6,
-                borderWidth: 1,
-                borderColor: beepingId === tool.tag_id ? '#f59e0b' : '#d1d5db',
-                backgroundColor: beepingId === tool.tag_id ? '#fef3c7' : 'transparent',
-                alignItems: 'center',
-                justifyContent: 'center',
-              }}
-            >
-              {beepingId === tool.tag_id
-                ? <ActivityIndicator size="small" color="#f59e0b" />
-                : <Ionicons name="volume-high" size={18} color="#6b7280" />
-              }
-            </TouchableOpacity>
-          )}
+          {(() => {
+            const toolTag = tool.assigned_tag ? getTagById(tool.assigned_tag) : null
+            if (!toolTag) return null
+            const bleId = toolTag.tag_id
+            return (
+              <TouchableOpacity
+                onPress={async () => {
+                  setBeepingId(bleId)
+                  await playTuyaSound(bleId)
+                  setBeepingId(null)
+                }}
+                disabled={beepingId === bleId}
+                style={{
+                  width: 42,
+                  paddingVertical: 10,
+                  borderRadius: 6,
+                  borderWidth: 1,
+                  borderColor: beepingId === bleId ? '#f59e0b' : '#d1d5db',
+                  backgroundColor: beepingId === bleId ? '#fef3c7' : 'transparent',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                }}
+              >
+                {beepingId === bleId
+                  ? <ActivityIndicator size="small" color="#f59e0b" />
+                  : <Ionicons name="volume-high" size={18} color="#6b7280" />
+                }
+              </TouchableOpacity>
+            )
+          })()}
         </View>
       </View>
     )

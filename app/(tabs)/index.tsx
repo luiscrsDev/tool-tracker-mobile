@@ -3,17 +3,20 @@ import { View, Text, TouchableOpacity, ScrollView, Alert, ActivityIndicator, Ref
 import { useRouter } from 'expo-router'
 import { useAuth } from '@/context/AuthContext'
 import { useTools } from '@/context/ToolsContext'
+import { useTags } from '@/context/TagsContext'
 
 export default function DashboardScreen() {
   const router = useRouter()
   const { contractor, admin, signOut } = useAuth()
   const { tools, loading, refreshTools } = useTools()
+  const { refreshTags } = useTags()
   const [refreshing, setRefreshing] = useState(false)
 
-  // Load tools on mount
+  // Load tools and tags on mount
   useEffect(() => {
     if (contractor?.id) {
       refreshTools(contractor.id)
+      refreshTags(contractor.id)
     }
   }, [contractor?.id])
 
@@ -43,7 +46,7 @@ export default function DashboardScreen() {
   }
 
   // Calculate stats
-  const connectedCount = tools.filter(t => t.is_connected).length
+  const connectedCount = tools.filter(t => t.assigned_tag).length
   const lowBatteryCount = tools.filter(t => t.battery && t.battery < 20).length
 
   return (
@@ -275,18 +278,18 @@ export default function DashboardScreen() {
                     paddingHorizontal: 8,
                     paddingVertical: 4,
                     borderRadius: 4,
-                    backgroundColor: tool.is_connected ? '#d1fae5' : '#fee2e2',
+                    backgroundColor: !!tool.assigned_tag ? '#d1fae5' : '#fee2e2',
                     marginBottom: 4,
                   }}
                 >
                   <Text
                     style={{
-                      color: tool.is_connected ? '#065f46' : '#991b1b',
+                      color: !!tool.assigned_tag ? '#065f46' : '#991b1b',
                       fontSize: 11,
                       fontWeight: '600',
                     }}
                   >
-                    {tool.is_connected ? '🟢 Conectada' : '🔴 Desconectada'}
+                    {!!tool.assigned_tag ? '🟢 Conectada' : '🔴 Desconectada'}
                   </Text>
                 </View>
 

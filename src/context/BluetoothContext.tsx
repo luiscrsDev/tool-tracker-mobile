@@ -12,7 +12,10 @@ interface BluetoothContextType {
   disconnectDevice: (deviceId: string) => Promise<void>
   playSound: (deviceId: string) => Promise<boolean>
   playTuyaSound: (deviceId: string) => Promise<boolean>
+  ringFMDN: (deviceId: string, eikB64: string) => Promise<boolean>
+  provisionEIK: (deviceId: string) => Promise<string | null>
   inspectDevice: (deviceId: string) => Promise<{ services: { uuid: string; characteristics: string[] }[] } | null>
+  readStableId: (deviceId: string) => Promise<string | null>
   clearDevices: () => void
   selectedDevice: BluetoothDevice | null
   setSelectedDevice: (device: BluetoothDevice | null) => void
@@ -36,10 +39,41 @@ export function BluetoothProvider({ children }: { children: React.ReactNode }) {
       await BLEService.startScanning(
         device => {
           setDevices(prev => {
-            const exists = prev.some(d => d.id === device.id)
-            if (exists) {
-              return prev.map(d => (d.id === device.id ? device : d))
+            // For Apple Find My devices (mfr starts 4C00): both MAC and mfr data rotate,
+            // so there is no stable dedup key. Strategy: keep only the strongest-RSSI
+            // Apple entries up to a cap of 10, replacing the weakest when cap is exceeded.
+            const isApple = (() => {
+              if (!device.manufacturerData) return false
+              try {
+                const b = Uint8Array.from(atob(device.manufacturerData), c => c.charCodeAt(0))
+                return b[0] === 0x4C && b[1] === 0x00
+              } catch { return false }
+            })()
+
+            // Normal dedup by MAC
+            const byMac = prev.findIndex(d => d.id === device.id)
+            if (byMac !== -1) {
+              return prev.map((d, i) => (i === byMac ? device : d))
             }
+
+            if (isApple) {
+              const appleEntries = prev.filter(d => {
+                if (!d.manufacturerData) return false
+                try {
+                  const b = Uint8Array.from(atob(d.manufacturerData), c => c.charCodeAt(0))
+                  return b[0] === 0x4C && b[1] === 0x00
+                } catch { return false }
+              })
+              if (appleEntries.length >= 10) {
+                // Replace the weakest Apple entry if new one is stronger
+                const weakest = appleEntries.reduce((a, b) => (a.rssi < b.rssi ? a : b))
+                if (device.rssi > weakest.rssi) {
+                  return prev.map(d => d.id === weakest.id ? device : d)
+                }
+                return prev // list full and new device is weaker — discard
+              }
+            }
+
             return [...prev, device]
           })
         },
@@ -100,9 +134,7 @@ export function BluetoothProvider({ children }: { children: React.ReactNode }) {
 
   const playTuyaSound = useCallback(async (deviceId: string) => {
     setError(null)
-    const success = await BLEService.playTuyaSound(deviceId)
-    if (!success) setError(new Error('Nenhum DP de alarme respondeu — verifique o console para detalhes'))
-    return success
+    return BLEService.playTuyaSound(deviceId)
   }, [])
 
   const inspectDevice = useCallback(async (deviceId: string) => {
@@ -110,11 +142,24 @@ export function BluetoothProvider({ children }: { children: React.ReactNode }) {
     return BLEService.inspectDevice(deviceId)
   }, [])
 
+  const readStableId = useCallback(async (deviceId: string) => {
+    setError(null)
+    return BLEService.readStableId(deviceId)
+  }, [])
+
+  const ringFMDN = useCallback(async (deviceId: string, eikB64: string) => {
+    setError(null)
+    return BLEService.ringFMDN(deviceId, eikB64)
+  }, [])
+
+  const provisionEIK = useCallback(async (deviceId: string) => {
+    setError(null)
+    return BLEService.provisionEIK(deviceId)
+  }, [])
+
   const playSound = useCallback(async (deviceId: string) => {
     setError(null)
-    const success = await BLEService.playSound(deviceId)
-    if (!success) setError(new Error('Não foi possível enviar beep — dispositivo não suporta Immediate Alert'))
-    return success
+    return BLEService.playSound(deviceId)
   }, [])
 
   const clearDevices = useCallback(() => {
@@ -134,7 +179,10 @@ export function BluetoothProvider({ children }: { children: React.ReactNode }) {
         disconnectDevice,
         playSound,
         playTuyaSound,
+        ringFMDN,
+        provisionEIK,
         inspectDevice,
+        readStableId,
         clearDevices,
         selectedDevice,
         setSelectedDevice,
