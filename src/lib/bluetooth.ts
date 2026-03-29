@@ -24,6 +24,7 @@ export interface BluetoothDevice {
   rssi: number
   serviceUUIDs?: string[]
   manufacturerData?: string | null
+  isFastPairP23?: boolean  // true if service data contains Model ID 073482
 }
 
 export const BLEService = {
@@ -99,12 +100,11 @@ export const BLEService = {
         }
 
         if (device) {
-          // Log Model ID from FE2C service data (Fast Pair)
+          // Check Fast Pair Model ID 073482 from FE2C service data
+          let isFastPairP23 = false
           if (device.serviceData) {
             const fe2cData = (device.serviceData as any)?.['0000fe2c-0000-1000-8000-00805f9b34fb']
-            if (fe2cData) {
-              console.log(`🏷️ [Fast Pair] Model ID service data: ${fe2cData} (device: ${device.name || device.id})`)
-            }
+            if (fe2cData === 'BzSC') isFastPairP23 = true // base64 of 073482
           }
           onDeviceFound({
             id: device.id,
@@ -112,6 +112,7 @@ export const BLEService = {
             rssi: device.rssi || 0,
             manufacturerData: device.manufacturerData,
             serviceUUIDs: device.serviceUUIDs,
+            isFastPairP23,
           })
         }
       })

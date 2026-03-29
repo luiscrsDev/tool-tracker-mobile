@@ -89,9 +89,7 @@ export default function AirTagScreen() {
     const proximityLabel = item.rssi > -55 ? '📍 Muito próximo' : item.rssi > -70 ? '🔵 Próximo' : '🔘 Distante'
     const tagRecord = tags.find(t => t.tag_id === item.id)
     const linkedTool = tagRecord ? tools.find(t => t.assigned_tag === tagRecord.id) : null
-    const displayName = item.name && item.name !== 'Anonymous'
-      ? item.name
-      : isAppleFindMy(item.manufacturerData) ? 'Find Easy' : item.name ?? 'Desconhecido'
+    const displayName = (item.name && item.name !== 'Anonymous') ? item.name : 'Find Easy'
 
     return (
       <TouchableOpacity
@@ -296,8 +294,19 @@ export default function AirTagScreen() {
       if ((d as any)._lastSeen && (now - (d as any)._lastSeen) > 5000) return false
       const tagId = stableTagId(d)
       if (pairedTagIds.has(tagId) || pairedTagIds.has(d.id)) return false
+      // 1. Model ID P23 via Fast Pair service data (quando disponível)
+      if ((d as any).isFastPairP23) return true
+      // 2. Nome contém "find" (ex: "Find Easy")
       const name = d.name?.toLowerCase() ?? ''
-      return name.includes('find') || name.includes('tag') || name.includes('tracker')
+      if (name.includes('find') || name.includes('tag') || name.includes('tracker')) return true
+      // 3. Apple Find My SEM nome — só se tem manufacturer data curta (tracker, não iPhone)
+      if ((!name || name === 'anonymous') && d.manufacturerData) {
+        try {
+          const b = Uint8Array.from(atob(d.manufacturerData), c => c.charCodeAt(0))
+          if (b[0] === 0x4C && b[1] === 0x00 && b.length <= 12) return true
+        } catch { /* ignore */ }
+      }
+      return false
     })
     .sort((a, b) => b.rssi - a.rssi)
 

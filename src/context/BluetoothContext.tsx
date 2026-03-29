@@ -53,13 +53,22 @@ export function BluetoothProvider({ children }: { children: React.ReactNode }) {
           setDevices(prev => {
             const now = Date.now()
 
-            // Tag the device with a timestamp
+            // Tag the device with a timestamp, preserve name if new ad has none
             const tagged = { ...device, _lastSeen: now }
 
-            // Dedup by MAC — update existing entry
+            // Dedup by MAC — update existing entry, keep name if new one is Anonymous
             const byMac = prev.findIndex(d => d.id === device.id)
             if (byMac !== -1) {
-              return prev.map((d, i) => (i === byMac ? tagged : d))
+              return prev.map((d, i) => {
+                if (i !== byMac) return d
+                const keepName = (!device.name || device.name === 'Anonymous') && d.name && d.name !== 'Anonymous'
+                return { ...tagged, name: keepName ? d.name : tagged.name }
+              })
+            }
+
+            // New MAC: if P23 (Fast Pair model ID) but no name, set "Find Easy"
+            if ((tagged as any).isFastPairP23 && (!tagged.name || tagged.name === 'Anonymous')) {
+              tagged.name = 'Find Easy'
             }
 
             return [...prev, tagged]
