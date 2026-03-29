@@ -287,21 +287,19 @@ export default function AirTagScreen() {
   // Ferramentas com tag vinculado
   const pairedTools = tools.filter(t => t.assigned_tag)
 
-  // Dispositivos encontrados no scan que ainda não estão pareados
-  // Filtra pelo nome "find" (ex: "Find Easy") — ignora iPhones, AirPods, etc.
+  // Dispositivos encontrados no scan — filtrados (purge no BluetoothContext cuida dos stale)
   const pairedTagIds = registeredBleIds
   const now = Date.now()
   const unpairedDevices = devices
     .filter(d => {
-      // Only show entries seen in last 8 seconds (handles MAC rotation)
-      if ((d as any)._lastSeen && (now - (d as any)._lastSeen) > 8000) return false
+      // Só mostra vistos nos últimos 5s (1 MAC por tracker nesse intervalo)
+      if ((d as any)._lastSeen && (now - (d as any)._lastSeen) > 5000) return false
       const tagId = stableTagId(d)
       if (pairedTagIds.has(tagId) || pairedTagIds.has(d.id)) return false
       const name = d.name?.toLowerCase() ?? ''
-      if (name.includes('find') || name.includes('tag') || name.includes('tracker')) return true
-      return isAppleFindMy(d.manufacturerData)
+      return name.includes('find') || name.includes('tag') || name.includes('tracker')
     })
-    .sort((a, b) => b.rssi - a.rssi) // strongest signal (closest) first
+    .sort((a, b) => b.rssi - a.rssi)
 
   // Para cada ferramenta pareada, pega o sinal atual do scan (se estiver visível)
   // Indexa por device.id E por manufacturerData para achar Apple devices com MAC rotativo

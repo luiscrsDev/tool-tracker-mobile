@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useCallback } from 'react'
+import React, { createContext, useContext, useState, useCallback, useEffect } from 'react'
 import { BLEService, type BluetoothDevice } from '@/lib/bluetooth'
 
 interface BluetoothContextType {
@@ -30,6 +30,18 @@ export function BluetoothProvider({ children }: { children: React.ReactNode }) {
   const [error, setError] = useState<Error | null>(null)
   const [selectedDevice, setSelectedDevice] = useState<BluetoothDevice | null>(null)
 
+  // Purge stale devices every 5s while scanning
+  useEffect(() => {
+    if (!scanning) return
+    const interval = setInterval(() => {
+      setDevices(prev => {
+        const now = Date.now()
+        return prev.filter(d => !((d as any)._lastSeen) || (now - (d as any)._lastSeen) < 6000)
+      })
+    }, 3000)
+    return () => clearInterval(interval)
+  }, [scanning])
+
   const startScanning = useCallback(async () => {
     try {
       setScanning(true)
@@ -44,13 +56,12 @@ export function BluetoothProvider({ children }: { children: React.ReactNode }) {
             // Tag the device with a timestamp
             const tagged = { ...device, _lastSeen: now }
 
-            // Dedup by MAC — update existing entry with fresh timestamp + RSSI
+            // Dedup by MAC — update existing entry
             const byMac = prev.findIndex(d => d.id === device.id)
             if (byMac !== -1) {
               return prev.map((d, i) => (i === byMac ? tagged : d))
             }
 
-            // New MAC — just add (stale entries filtered at display layer)
             return [...prev, tagged]
           })
         },
