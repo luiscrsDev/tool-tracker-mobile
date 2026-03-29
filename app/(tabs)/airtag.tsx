@@ -238,23 +238,17 @@ export default function AirTagScreen() {
     setPairError(null)
 
     try {
-      // Parar scan ANTES de qualquer operação GATT (Android não permite scan + GATT simultâneo)
-      if (scanning) await stopScanning()
+      // NÃO para o scan — conexão BLE funciona com scan rodando neste Samsung
+      // Parar o scan causa MAC stale que impede conexão
 
       // Determinar o BLE identifier estável (usar MAC ou mfr data — sem GATT para não conflitar)
       const bleTagId = stableTagId(sheet)
       console.log(`[Pair] tag_id: ${bleTagId}`)
 
-      // 1. Bond com o device no nível Android (habilita write-with-response)
+      // 1. Provisionar EIK via BLE-PLX (mini-scan interno pega MAC fresco)
+      // NÃO faz bond — bond com MAC antigo confunde o BLE stack
       let eik: string | null = null
       try {
-        console.log('[Pair] Bonding device...')
-        const bonded = await bondDevice(sheet.id)
-        console.log(`[Pair] Bond: ${bonded ? 'OK' : 'failed'}`)
-        // Aguarda estabilizar após bond
-        await new Promise(r => setTimeout(r, 1000))
-
-        // 2. Provisionar EIK via BLE-PLX (agora com bond — write-with-response deve funcionar)
         console.log('[Pair] Provisionando EIK...')
         eik = await provisionEIK(sheet.id)
         console.log(`[Pair] EIK: ${eik ? eik.slice(0, 10) + '...' : 'null'}`)

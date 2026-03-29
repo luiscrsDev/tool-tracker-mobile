@@ -243,10 +243,11 @@ export const BLEService = {
     const BEACON_ACTIONS   = 'fe2c1238-8366-4814-8eb0-01de32100bea'
 
     try {
-      // Cancel any stale connection first
+      // NÃO para o scan — conexão funciona com scan rodando
+      // NÃO faz mini-scan — usa MAC do caller (devices array do UI scan)
       await getBleManager().cancelDeviceConnection(deviceId).catch(() => {})
-      console.log(`[FMDN] Provisioning for ${deviceId}...`)
-      const device = await getBleManager().connectToDevice(deviceId, { timeout: 20000, autoConnect: true, refreshGatt: 'OnConnected' })
+      console.log(`[FMDN] Provisioning for ${deviceId} (scan running)...`)
+      const device = await getBleManager().connectToDevice(deviceId, { timeout: 10000, refreshGatt: 'OnConnected' })
       await device.discoverAllServicesAndCharacteristics()
 
       const services = await device.services()
@@ -288,40 +289,53 @@ export const BLEService = {
         console.warn('[FMDN] Nonce read failed:', (e as Error)?.message)
       }
 
-      // Step 3: AES-ECB encrypt EIK with accountKey (from MicflipFinder APK reverse engineering)
-      const accountKeyWA = CryptoJS.lib.WordArray.create(new Uint8Array(accountKeyBytes))
-      const eikWA = CryptoJS.lib.WordArray.create(new Uint8Array(eikBytes))
-      const eikEncrypted = CryptoJS.AES.encrypt(eikWA, accountKeyWA, {
-        mode: CryptoJS.mode.ECB,
-        padding: CryptoJS.pad.NoPadding,
-      })
-      const eikEncBytes: number[] = []
-      const eikEncHex = eikEncrypted.ciphertext.toString(CryptoJS.enc.Hex)
-      for (let i = 0; i < eikEncHex.length; i += 2) eikEncBytes.push(parseInt(eikEncHex.slice(i, i + 2), 16))
+      // Step 3: Build all 9 EIK variations (from MicflipFinder APK reverse engineering)
+      // AES-ECB encrypt: split EIK into 2x16-byte blocks, encrypt each with accountKey
+      const aesEcb = (key: number[], data: number[]): number[] => {
+        const keyWA = CryptoJS.lib.WordArray.create(new Uint8Array(key))
+        const b1 = CryptoJS.AES.encrypt(CryptoJS.lib.WordArray.create(new Uint8Array(data.slice(0, 16))), keyWA, { mode: CryptoJS.mode.ECB, padding: CryptoJS.pad.NoPadding })
+        const b2 = CryptoJS.AES.encrypt(CryptoJS.lib.WordArray.create(new Uint8Array(data.slice(16, 32))), keyWA, { mode: CryptoJS.mode.ECB, padding: CryptoJS.pad.NoPadding })
+        const hex = b1.ciphertext.toString(CryptoJS.enc.Hex) + b2.ciphertext.toString(CryptoJS.enc.Hex)
+        const out: number[] = []
+        for (let i = 0; i < hex.length; i += 2) out.push(parseInt(hex.slice(i, i + 2), 16))
+        return out
+      }
+      const hmac8 = (key: number[], data: number[]): number[] => {
+        const h = CryptoJS.HmacSHA256(CryptoJS.lib.WordArray.create(new Uint8Array(data)), CryptoJS.lib.WordArray.create(new Uint8Array(key)))
+        const hex = h.toString(CryptoJS.enc.Hex).slice(0, 16)
+        const out: number[] = []
+        for (let i = 0; i < 16; i += 2) out.push(parseInt(hex.slice(i, i + 2), 16))
+        return out
+      }
 
-      // Step 4: HMAC = HMAC-SHA256(accountKey, version || nonce || 0x02 || 0x28 || eikEncrypted)
-      const dataId = 0x02
-      const dLen = 0x28 // 40 = 8 (auth) + 32 (encrypted EIK)
-      const hmacInput = new Uint8Array([protocolVersion, ...nonce, dataId, dLen, ...eikEncBytes])
-      const hmacInputWA = CryptoJS.lib.WordArray.create(hmacInput)
-      const hmacFull = CryptoJS.HmacSHA256(hmacInputWA, accountKeyWA)
-      const authHex = hmacFull.toString(CryptoJS.enc.Hex).slice(0, 16)
-      const authBytes: number[] = []
-      for (let i = 0; i < 16; i += 2) authBytes.push(parseInt(authHex.slice(i, i + 2), 16))
+      const eikEnc = aesEcb(accountKeyBytes, eikBytes)
+      const nonce8 = nonce
+      const dId = 0x02
 
-      // Payload: [0x02, 0x28, auth(8b), eikEncrypted(32b)] = 42 bytes
-      const setEikPayload = [dataId, dLen, ...authBytes, ...eikEncBytes]
-      console.log(`[FMDN] Set EIK (AES-ECB encrypted): ${setEikPayload.slice(0, 12).map(b => b.toString(16).padStart(2, '0')).join(' ')}...`)
+      const variations: { name: string; payload: number[] }[] = [
+        { name: 'C1: hmac(nonce) enc32', payload: [dId, 40, ...hmac8(accountKeyBytes, nonce8), ...eikEnc] },
+        { name: 'C1b: hmac(nonce) plain', payload: [dId, 40, ...hmac8(accountKeyBytes, nonce8), ...eikBytes] },
+        { name: 'C1c: hmac(nonce) dLen=0x20', payload: [dId, 32, ...hmac8(accountKeyBytes, nonce8), ...eikEnc] },
+        { name: 'C1d: hmac(nonce+dId)', payload: [dId, 40, ...hmac8(accountKeyBytes, [...nonce8, dId]), ...eikEnc] },
+        { name: 'C1e: hmac(nonce+eikEnc)', payload: [dId, 40, ...hmac8(accountKeyBytes, [...nonce8, ...eikEnc]), ...eikEnc] },
+        { name: 'C1f: hmac_eik(nonce)', payload: [dId, 40, ...hmac8(eikBytes, nonce8), ...eikEnc] },
+        { name: 'A1: full-hmac v1', payload: [dId, 40, ...hmac8(accountKeyBytes, [protocolVersion, ...nonce8, dId, 40, ...eikEnc]), ...eikEnc] },
+        { name: 'D1: noAuth dLen=0x20', payload: [dId, 32, ...eikEnc] },
+        { name: 'D2: noAuth dLen=0x28', payload: [dId, 40, ...eikEnc] },
+      ]
 
-      // Step 5: Write to fe2c1238 (Beacon Actions) — NOT fe2c1236
+      // Step 4: Try each variation
       let eikWritten = false
-      try {
-        await getBleManager().writeCharacteristicWithResponseForDevice(
-          deviceId, FMDN_SVC, BEACON_ACTIONS, this._toBase64(setEikPayload))
-        console.log('✅ [FMDN] EIK written (write-with-response)!')
-        eikWritten = true
-      } catch (e) {
-        console.warn(`[FMDN] EIK write-with-response failed: ${(e as Error)?.message?.slice(0, 60)}`)
+      for (const v of variations) {
+        try {
+          await getBleManager().writeCharacteristicWithResponseForDevice(
+            deviceId, FMDN_SVC, BEACON_ACTIONS, this._toBase64(v.payload))
+          console.log(`✅ [FMDN] EIK written! ${v.name}`)
+          eikWritten = true
+          break
+        } catch {
+          console.warn(`[FMDN] ${v.name} rejected`)
+        }
       }
 
       await getBleManager().cancelDeviceConnection(deviceId).catch(() => {})
