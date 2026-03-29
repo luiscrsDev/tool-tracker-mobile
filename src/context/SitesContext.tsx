@@ -1,5 +1,6 @@
-import React, { createContext, useContext, useState, useCallback } from 'react'
+import React, { createContext, useContext, useState, useCallback, useRef } from 'react'
 import { supabase } from '@/lib/supabase'
+import * as Location from 'expo-location'
 import type { Site } from '@/types'
 
 interface SitesContextType {
@@ -10,6 +11,7 @@ interface SitesContextType {
   updateSite: (id: string, updates: Partial<Site>) => Promise<void>
   deleteSite: (id: string) => Promise<void>
   resolveLocation: (lat: number, lng: number) => string
+  resolveLocationAsync: (lat: number, lng: number) => Promise<string>
 }
 
 const SitesContext = createContext<SitesContextType | undefined>(undefined)
@@ -70,18 +72,47 @@ export function SitesProvider({ children }: { children: React.ReactNode }) {
     setSites(prev => prev.filter(s => s.id !== id))
   }, [])
 
-  /** Resolve coordinates to site label or formatted address */
+  // Cache de reverse geocoding
+  const geocodeCache = useRef(new Map<string, string>())
+
+  /** Resolve sync: site label ou coordenadas */
   const resolveLocation = useCallback((lat: number, lng: number): string => {
     for (const site of sites) {
       const dist = distanceMeters(lat, lng, site.latitude, site.longitude)
       if (dist <= site.radius_m) return site.label
     }
+    const key = `${lat.toFixed(4)},${lng.toFixed(4)}`
+    return geocodeCache.current.get(key) || `${lat.toFixed(5)}, ${lng.toFixed(5)}`
+  }, [sites])
+
+  /** Resolve async: site label → reverse geocode → coordenadas */
+  const resolveLocationAsync = useCallback(async (lat: number, lng: number): Promise<string> => {
+    // 1. Check sites
+    for (const site of sites) {
+      const dist = distanceMeters(lat, lng, site.latitude, site.longitude)
+      if (dist <= site.radius_m) return site.label
+    }
+    // 2. Check cache
+    const key = `${lat.toFixed(4)},${lng.toFixed(4)}`
+    if (geocodeCache.current.has(key)) return geocodeCache.current.get(key)!
+    // 3. Reverse geocode
+    try {
+      const results = await Location.reverseGeocodeAsync({ latitude: lat, longitude: lng })
+      if (results.length > 0) {
+        const r = results[0]
+        const streetFull = [r.streetNumber, r.street].filter(Boolean).join(' ')
+        const parts = [streetFull, r.city, r.region].filter(Boolean)
+        const address = parts.join(', ') || `${lat.toFixed(5)}, ${lng.toFixed(5)}`
+        geocodeCache.current.set(key, address)
+        return address
+      }
+    } catch { /* fallback */ }
     return `${lat.toFixed(5)}, ${lng.toFixed(5)}`
   }, [sites])
 
   return (
     <SitesContext.Provider value={{
-      sites, loading, refreshSites, addSite, updateSite, deleteSite, resolveLocation,
+      sites, loading, refreshSites, addSite, updateSite, deleteSite, resolveLocation, resolveLocationAsync,
     }}>
       {children}
     </SitesContext.Provider>

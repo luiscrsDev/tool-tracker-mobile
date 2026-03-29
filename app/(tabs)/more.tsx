@@ -11,13 +11,6 @@ const menuItems = [
     color: '#2563EB',
   },
   {
-    icon: '📍',
-    label: 'Localizações',
-    desc: 'Última posição das ferramentas',
-    path: '/(tabs)/locations',
-    color: '#10B981',
-  },
-  {
     icon: '📡',
     label: 'AirTag Setup',
     desc: 'Parear dispositivos Bluetooth',

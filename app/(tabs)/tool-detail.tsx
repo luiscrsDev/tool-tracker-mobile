@@ -30,7 +30,8 @@ export default function ToolDetailScreen() {
   const router = useRouter()
   const { tools, deleteTool, unlinkTag } = useTools()
   const { getTagById } = useTags()
-  const { resolveLocation } = useSites()
+  const { resolveLocation, resolveLocationAsync } = useSites()
+  const [resolvedAddresses, setResolvedAddresses] = useState<Map<string, string>>(new Map())
   const { allToolLocations, trackedTools } = useLocation()
   const [recentHistory, setRecentHistory] = useState<LocationRecord[]>([])
   const [loadingHistory, setLoadingHistory] = useState(false)
@@ -40,6 +41,28 @@ export default function ToolDetailScreen() {
   const lastLocation = allToolLocations.get(toolId ?? '') || tool?.last_seen_location
   const isTracking = trackedTools.some(t => t.id === toolId)
   const isConnected = !!tool?.assigned_tag
+
+  // Resolve endereços quando histórico carrega
+  useEffect(() => {
+    if (recentHistory.length === 0) return
+    const resolve = async () => {
+      const map = new Map<string, string>()
+      for (const r of recentHistory) {
+        const addr = await resolveLocationAsync(r.latitude, r.longitude)
+        map.set(r.id, addr)
+      }
+      setResolvedAddresses(map)
+    }
+    resolve()
+  }, [recentHistory, resolveLocationAsync])
+
+  // Resolve última localização
+  useEffect(() => {
+    if (!lastLocation) return
+    resolveLocationAsync(lastLocation.latitude, lastLocation.longitude).then(addr => {
+      setResolvedAddresses(prev => new Map(prev).set('last', addr))
+    })
+  }, [lastLocation, resolveLocationAsync])
 
   useEffect(() => {
     if (toolId) loadRecentHistory()
@@ -236,7 +259,7 @@ export default function ToolDetailScreen() {
               ÚLTIMA LOCALIZAÇÃO
             </Text>
             <Text style={{ fontSize: 14, fontWeight: '700', color: '#1E40AF', marginBottom: 6 }}>
-              {resolveLocation(lastLocation.latitude, lastLocation.longitude)}
+              {resolvedAddresses.get('last') || resolveLocation(lastLocation.latitude, lastLocation.longitude)}
             </Text>
             {lastLocation.timestamp && (
               <Text style={{ fontSize: 11, color: '#CBD5E1', marginBottom: 12 }}>
@@ -291,7 +314,7 @@ export default function ToolDetailScreen() {
                   }} />
                   <View style={{ flex: 1 }}>
                     <Text style={{ fontSize: 12, fontWeight: '600', color: '#1E40AF' }}>
-                      {resolveLocation(record.latitude, record.longitude)}
+                      {resolvedAddresses.get(record.id) || resolveLocation(record.latitude, record.longitude)}
                     </Text>
                     <Text style={{ fontSize: 10, color: '#CBD5E1', marginTop: 2 }}>
                       {new Date(record.recorded_at).toLocaleString('pt-BR')}
