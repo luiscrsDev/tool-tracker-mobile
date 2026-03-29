@@ -130,7 +130,7 @@ export const BLEService = {
   async connectToDevice(deviceId: string): Promise<boolean> {
     try {
       console.log(`✅ Connecting to device: ${deviceId}`)
-      const device = await getBleManager().connectToDevice(deviceId, { timeout: 10000 })
+      const device = await getBleManager().connectToDevice(deviceId, { timeout: 10000, refreshGatt: 'OnConnected' })
       console.log(`✅ Connected to: ${device.name}`)
       return true
     } catch (err) {
@@ -232,93 +232,111 @@ export const BLEService = {
    * Strategy: try direct write to known UUIDs first, then discover as fallback.
    */
   async provisionEIK(deviceId: string): Promise<string | null> {
-    const FMDN_SVC        = '0000fe2c-0000-1000-8000-00805f9b34fb'
+    const FMDN_SVC         = '0000fe2c-0000-1000-8000-00805f9b34fb'
+    const ACCOUNT_KEY_CHAR = 'fe2c1236-8366-4814-8eb0-01de32100bea'
     const BEACON_ACTIONS   = 'fe2c1238-8366-4814-8eb0-01de32100bea'
 
-    const tryWrite = async (svc: string, char: string, b64: string): Promise<boolean> => {
-      try {
-        await getBleManager().writeCharacteristicWithResponseForDevice(deviceId, svc, char, b64)
-        return true
-      } catch {
-        try {
-          await getBleManager().writeCharacteristicWithoutResponseForDevice(deviceId, svc, char, b64)
-          return true
-        } catch { return false }
-      }
-    }
-
     try {
-      console.log(`[FMDN] Provisioning EIK for ${deviceId}...`)
-      const device = await getBleManager().connectToDevice(deviceId, { timeout: 10000 })
+      console.log(`[FMDN] Provisioning for ${deviceId}...`)
+      const device = await getBleManager().connectToDevice(deviceId, { timeout: 10000, refreshGatt: 'OnConnected' })
       await device.discoverAllServicesAndCharacteristics()
 
-      // Log all discovered services for debugging
       const services = await device.services()
       const svcUuids = services.map(s => s.uuid)
-      console.log(`[FMDN] Discovered services: ${svcUuids.join(', ')}`)
+      console.log(`[FMDN] Services: ${svcUuids.join(', ')}`)
 
-      // Build candidate service list: known FMDN UUID first, then all discovered
-      const candidateSvcs = [FMDN_SVC, ...svcUuids.filter(u => u !== FMDN_SVC)]
+      if (!svcUuids.some(u => u.includes('fe2c'))) {
+        console.warn('[FMDN] FE2C service not found')
+        await getBleManager().cancelDeviceConnection(deviceId).catch(() => {})
+        return null
+      }
 
-      // Generate random 32-byte EIK
+      // Generate 16-byte account key and 32-byte EIK
+      const accountKeyBytes: number[] = []
+      for (let i = 0; i < 16; i++) accountKeyBytes.push(Math.floor(Math.random() * 256))
+      // Byte 0 must be 0x04 for account key type
+      accountKeyBytes[0] = 0x04
+
       const eikBytes: number[] = []
       for (let i = 0; i < 32; i++) eikBytes.push(Math.floor(Math.random() * 256))
-      const eikB64 = this._toBase64(eikBytes)
 
-      // Step 1: Try reading nonce from Beacon Actions (confirms characteristic exists)
-      let nonceRead = false
-      let usedSvc: string | null = null
-      for (const svc of candidateSvcs) {
+      // Step 1: Write account key to fe2c1236 (first write on factory-reset = becomes owner)
+      console.log('[FMDN] Writing account key to fe2c1236...')
+      try {
+        await getBleManager().writeCharacteristicWithResponseForDevice(
+          deviceId, FMDN_SVC, ACCOUNT_KEY_CHAR, this._toBase64(accountKeyBytes))
+        console.log('✅ [FMDN] Account key written (write-with-response)')
+      } catch {
         try {
-          const readResult = await getBleManager().readCharacteristicForDevice(deviceId, svc, BEACON_ACTIONS)
-          if (readResult.value) {
-            const raw = this._fromBase64(readResult.value)
-            if (raw.length >= 9) {
-              console.log(`✅ [FMDN] Nonce read OK from service ${svc}: ${raw.slice(1, 9).map(b => b.toString(16).padStart(2, '0')).join(' ')}`)
-              nonceRead = true
-              usedSvc = svc
-              break
-            }
+          await getBleManager().writeCharacteristicWithoutResponseForDevice(
+            deviceId, FMDN_SVC, ACCOUNT_KEY_CHAR, this._toBase64(accountKeyBytes))
+          console.log('✅ [FMDN] Account key written (write-no-response)')
+        } catch (e) {
+          console.warn('[FMDN] Account key write failed:', (e as Error)?.message)
+        }
+      }
+      await new Promise(r => setTimeout(r, 500))
+
+      // Step 2: Read nonce from Beacon Actions
+      let nonce: number[] = []
+      let protocolVersion = 0x01
+      try {
+        const readResult = await getBleManager().readCharacteristicForDevice(deviceId, FMDN_SVC, BEACON_ACTIONS)
+        if (readResult.value) {
+          const raw = this._fromBase64(readResult.value)
+          if (raw.length >= 9) {
+            protocolVersion = raw[0]
+            nonce = raw.slice(1, 9)
+            console.log(`✅ [FMDN] Nonce: ${nonce.map(b => b.toString(16).padStart(2, '0')).join(' ')}`)
           }
-        } catch { /* try next service */ }
+        }
+      } catch (e) {
+        console.warn('[FMDN] Nonce read failed:', (e as Error)?.message)
       }
 
-      if (!nonceRead) {
-        console.warn('[FMDN] Could not read nonce from any service — Beacon Actions not accessible')
-        // Still try writing blindly
-        usedSvc = FMDN_SVC
-      }
+      // Step 3: Build Set EIK payload with HMAC auth using account key
+      // Auth = HMAC-SHA256(account_key, protocol_version || nonce || data_id || data_length || eik)
+      const dataId = 0x02
+      const dataLen = eikBytes.length
+      const hmacInput = new Uint8Array([protocolVersion, ...nonce, dataId, dataLen, ...eikBytes])
+      const hmacInputWA = CryptoJS.lib.WordArray.create(hmacInput)
+      const accountKeyWA = CryptoJS.lib.WordArray.create(new Uint8Array(accountKeyBytes))
+      const hmacFull = CryptoJS.HmacSHA256(hmacInputWA, accountKeyWA)
+      const authHex = hmacFull.toString(CryptoJS.enc.Hex).slice(0, 16) // 8 bytes
+      const authBytes: number[] = []
+      for (let i = 0; i < 16; i += 2) authBytes.push(parseInt(authHex.slice(i, i + 2), 16))
 
-      // Step 2: Clear existing EIK (Data ID 0x03)
-      const clearOk = await tryWrite(usedSvc!, BEACON_ACTIONS, this._toBase64([0x03, 0x00]))
-      if (clearOk) {
-        console.log('[FMDN] Clear EIK sent')
-        await new Promise(r => setTimeout(r, 500))
-      }
+      const setEikPayload = [dataId, dataLen + 8, ...authBytes, ...eikBytes]
+      console.log(`[FMDN] Set EIK payload (${setEikPayload.length} bytes): ${setEikPayload.slice(0, 12).map(b => b.toString(16).padStart(2, '0')).join(' ')}...`)
 
-      // Step 3: Set new EIK (Data ID 0x02, 32 bytes)
-      const setEikPayload = this._toBase64([0x02, 0x20, ...eikBytes])
-      const writeOk = await tryWrite(usedSvc!, BEACON_ACTIONS, setEikPayload)
-
-      if (writeOk) {
-        console.log(`✅ [FMDN] EIK provisioned via service ${usedSvc}`)
-        await getBleManager().cancelDeviceConnection(deviceId).catch(() => {})
-        return eikB64
-      }
-
-      // Step 4: Fallback — try every discovered service
-      for (const svc of svcUuids) {
-        if (svc === usedSvc) continue
-        const ok = await tryWrite(svc, BEACON_ACTIONS, setEikPayload)
-        if (ok) {
-          console.log(`✅ [FMDN] EIK provisioned via fallback service ${svc}`)
-          await getBleManager().cancelDeviceConnection(deviceId).catch(() => {})
-          return eikB64
+      // Step 4: Write Set EIK
+      let eikWritten = false
+      try {
+        await getBleManager().writeCharacteristicWithResponseForDevice(
+          deviceId, FMDN_SVC, BEACON_ACTIONS, this._toBase64(setEikPayload))
+        console.log('✅ [FMDN] EIK written (write-with-response)!')
+        eikWritten = true
+      } catch (e) {
+        console.warn('[FMDN] EIK write-with-response failed:', (e as Error)?.message)
+        // Fallback: try without auth (simple payload)
+        try {
+          const simplePayload = [dataId, dataLen, ...eikBytes]
+          await getBleManager().writeCharacteristicWithResponseForDevice(
+            deviceId, FMDN_SVC, BEACON_ACTIONS, this._toBase64(simplePayload))
+          console.log('✅ [FMDN] EIK written (simple, no auth)')
+          eikWritten = true
+        } catch {
+          console.warn('[FMDN] EIK simple write also failed')
         }
       }
 
-      console.warn('[FMDN] EIK write failed on all services')
       await getBleManager().cancelDeviceConnection(deviceId).catch(() => {})
+
+      if (eikWritten) {
+        const eikB64 = this._toBase64(eikBytes)
+        console.log(`✅ [FMDN] Provisioned! EIK=${eikB64.slice(0, 10)}...`)
+        return eikB64
+      }
       return null
     } catch (err) {
       console.warn('[FMDN] provisionEIK error:', (err as Error)?.message)
@@ -337,7 +355,7 @@ export const BLEService = {
 
     try {
       console.log(`[FMDN Ring] Connecting to ${deviceId}...`)
-      const device = await getBleManager().connectToDevice(deviceId, { timeout: 15000, autoConnect: true })
+      const device = await getBleManager().connectToDevice(deviceId, { timeout: 15000, autoConnect: true, refreshGatt: 'OnConnected' })
       await device.discoverAllServicesAndCharacteristics()
 
       // Try known FMDN service first, then all discovered
@@ -470,8 +488,10 @@ export const BLEService = {
     }
 
     try {
+      // Limpar conexão anterior (se houver) para evitar "Operation was cancelled"
+      await getBleManager().cancelDeviceConnection(deviceId).catch(() => {})
       console.log(`🔔 [BLE Beep] Conectando: ${deviceId}`)
-      const device = await getBleManager().connectToDevice(deviceId, { timeout: 10000 })
+      const device = await getBleManager().connectToDevice(deviceId, { timeout: 10000, refreshGatt: 'OnConnected' })
       await device.discoverAllServicesAndCharacteristics()
 
       // Loga os serviços encontrados — útil para diagnóstico
@@ -548,17 +568,49 @@ export const BLEService = {
       }
 
       // ── 1. Apple Find My (FD44 / 4F860003) — protocolo FMNA oficial ──────
-      // Fonte: AirGuard (seemoo-lab) — AppleFindMy.kt
       if (!sent) {
         const FINDMY_SVC  = '0000fd44-0000-1000-8000-00805f9b34fb'
         const FINDMY_CHAR = '4f860003-943b-49ef-bed4-2f730304427a'
         const hasFd44 = svcList.some(u => u.toLowerCase().includes('fd44'))
         if (hasFd44) {
           console.log('[BLE Beep] Tentando Apple Find My (FD44)...')
-          sent = await tryWrite(FINDMY_SVC, FINDMY_CHAR, toBase64([0x01, 0x00, 0x03]))
-          if (sent) {
-            setTimeout(() => tryWrite(FINDMY_SVC, FINDMY_CHAR, toBase64([0x01, 0x01, 0x03])).catch(() => {}), 5000)
+          // Habilitar notificações primeiro (AirGuard faz isso antes do write)
+          try {
+            getBleManager().monitorCharacteristicForDevice(deviceId, FINDMY_SVC, FINDMY_CHAR, () => {})
+            await new Promise(r => setTimeout(r, 300))
+          } catch { /* notificações opcionais */ }
+          // Forçar write-with-response (FMNA exige)
+          try {
+            await getBleManager().writeCharacteristicWithResponseForDevice(
+              deviceId, FINDMY_SVC, FINDMY_CHAR, toBase64([0x01, 0x00, 0x03]))
+            console.log('✅ [BLE Beep] FMNA sound (write-with-response) OK!')
+            sent = true
+            setTimeout(() => {
+              getBleManager().writeCharacteristicWithResponseForDevice(
+                deviceId, FINDMY_SVC, FINDMY_CHAR, toBase64([0x01, 0x01, 0x03])).catch(() => {})
+            }, 5000)
+          } catch (e) {
+            console.warn('[BLE Beep] FMNA write-with-response failed:', (e as Error)?.message)
+            // Fallback: write-without-response
+            sent = await tryWrite(FINDMY_SVC, FINDMY_CHAR, toBase64([0x01, 0x00, 0x03]))
           }
+        }
+      }
+
+      // ── 1b. Apple AirTag sound service (7DFC9000 / 0xAF) ──────────────
+      if (!sent) {
+        const AIRTAG_SVC  = '7dfc9000-7d1c-4951-86aa-8d9728f8d66c'
+        const AIRTAG_CHAR = '7dfc9001-7d1c-4951-86aa-8d9728f8d66c'
+        // Also try 7dfc8000 variant
+        const AIRTAG_SVC2 = '7dfc8000-7d1c-4951-86aa-8d9728f8d66c'
+        const AIRTAG_CHAR2 = '7dfc8001-7d1c-4951-86aa-8d9728f8d66c'
+        const hasAirtag = svcList.some(u => u.includes('7dfc'))
+        if (hasAirtag) {
+          console.log('[BLE Beep] Tentando Apple AirTag sound (7DFC)...')
+          sent = await tryWrite(AIRTAG_SVC, AIRTAG_CHAR, toBase64([0xAF]))
+            || await tryWrite(AIRTAG_SVC2, AIRTAG_CHAR2, toBase64([0xAF]))
+            || await tryWrite(AIRTAG_SVC2, AIRTAG_CHAR, toBase64([0xAF]))
+          if (sent) console.log('✅ [BLE Beep] AirTag sound OK!')
         }
       }
 
@@ -710,7 +762,7 @@ export const BLEService = {
 
     try {
       console.log(`[GATT] Conectando a ${deviceId} para ler ID estável...`)
-      const device = await getBleManager().connectToDevice(deviceId, { timeout: 10000 })
+      const device = await getBleManager().connectToDevice(deviceId, { timeout: 10000, refreshGatt: 'OnConnected' })
       await device.discoverAllServicesAndCharacteristics()
 
       const candidates: [string, string][] = [
@@ -742,7 +794,7 @@ export const BLEService = {
   async inspectDevice(deviceId: string): Promise<{ services: { uuid: string; characteristics: string[] }[] } | null> {
     try {
       console.log(`🔍 Inspecionando: ${deviceId}`)
-      const device = await getBleManager().connectToDevice(deviceId, { timeout: 10000 })
+      const device = await getBleManager().connectToDevice(deviceId, { timeout: 10000, refreshGatt: 'OnConnected' })
       await device.discoverAllServicesAndCharacteristics()
 
       const services = await device.services()
@@ -777,7 +829,7 @@ export const BLEService = {
 
     try {
       console.log(`🔔 Conectando para beep: ${deviceId}`)
-      const device = await getBleManager().connectToDevice(deviceId, { timeout: 8000 })
+      const device = await getBleManager().connectToDevice(deviceId, { timeout: 8000, refreshGatt: 'OnConnected' })
       await device.discoverAllServicesAndCharacteristics()
 
       // Tenta sem resposta primeiro (mais rápido)

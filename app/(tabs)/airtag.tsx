@@ -136,11 +136,25 @@ export default function AirTagScreen() {
             e.stopPropagation()
             setBeepingId(item.id)
             try {
-              // Para scan + delay curto — Samsung precisa de scan parado pra GATT
-              if (scanning) { await stopScanning(); await new Promise(r => setTimeout(r, 500)) }
+              // Pega o MAC mais fresco ANTES de parar o scan
+              const freshDevice = [...devices]
+                .filter(d => {
+                  if (d.id === item.id) return true
+                  if (item.name && d.name && d.name === item.name) return true
+                  const dn = d.name?.toLowerCase() ?? ''
+                  const in_ = item.name?.toLowerCase() ?? ''
+                  if (dn.includes('find') && in_.includes('find')) return true
+                  return false
+                })
+                .sort((a, b) => ((b as any)._lastSeen ?? 0) - ((a as any)._lastSeen ?? 0))[0]
+              const connectId = freshDevice?.id ?? item.id
+              console.log(`[Beep] connectId=${connectId} (fresh=${!!freshDevice}, rssi=${freshDevice?.rssi})`)
+
+              // NÃO para scan — o beep de 22:29 que encontrou FE2C era sem parar scan
+
               const tagRec = tags.find(t => t.tag_id === item.id)
                 || tags.find(t => t.eik && item.name?.includes('Find') && t.name?.includes('Find'))
-              await playTuyaSound(item.id, tagRec?.eik ?? undefined)
+              await playTuyaSound(connectId, tagRec?.eik ?? undefined)
             } catch { /* não suporta beep */ } finally {
               setBeepingId(null)
             }
@@ -231,19 +245,14 @@ export default function AirTagScreen() {
       const bleTagId = stableTagId(sheet)
       console.log(`[Pair] tag_id: ${bleTagId}`)
 
-      // 1. Provisionar EIK via módulo nativo (GATT direto — bypassa react-native-ble-plx)
+      // 1. Provisionar EIK via react-native-ble-plx (com refreshGatt — FE2C acessível)
       let eik: string | null = null
       try {
-        console.log('[Pair] Provisionando tracker via módulo nativo FMDN...')
-        const result = await provisionTracker(sheet.id)
-        if (result) {
-          eik = result.eik
-          console.log(`✅ [Pair] EIK provisionada: ${eik.slice(0, 10)}...`)
-        } else {
-          console.warn('[Pair] FMDN provisioning retornou null — tracker pode não suportar ou já estar provisionado')
-        }
+        console.log('[Pair] Provisionando EIK via BLE-PLX...')
+        eik = await provisionEIK(sheet.id)
+        console.log(`[Pair] EIK: ${eik ? eik.slice(0, 10) + '...' : 'null'}`)
       } catch (e) {
-        console.warn('[Pair] FMDN provisioning failed:', (e as Error)?.message)
+        console.warn('[Pair] EIK provisioning failed:', (e as Error)?.message)
       }
 
       // 2. Cria/atualiza o registro na tabela tags

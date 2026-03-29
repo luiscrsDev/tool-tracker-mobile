@@ -117,7 +117,9 @@ class ExpoFmdnModule : Module() {
     device.connectGatt(context, true, object : BluetoothGattCallback() {
       override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
         if (newState == BluetoothProfile.STATE_CONNECTED) {
-          Log.i(TAG, "Connected to $macAddress, discovering services...")
+          Log.i(TAG, "Connected to $macAddress, refreshing GATT cache...")
+          refreshGattCache(gatt)
+          Thread.sleep(600) // wait for cache clear
           gatt.discoverServices()
         } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
           Log.i(TAG, "Disconnected from $macAddress")
@@ -176,8 +178,10 @@ class ExpoFmdnModule : Module() {
       device.connectGatt(context, true, object : BluetoothGattCallback() {
       override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
         if (newState == BluetoothProfile.STATE_CONNECTED) {
-          Log.i(TAG, "[Provision] Connected! Discovering services...")
+          Log.i(TAG, "[Provision] Connected! Refreshing GATT cache...")
+          refreshGattCache(gatt)
           step = 1
+          Thread.sleep(600)
           gatt.discoverServices()
         } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
           if (step < 4) {
@@ -327,6 +331,8 @@ class ExpoFmdnModule : Module() {
     device.connectGatt(context, true, object : BluetoothGattCallback() {
       override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
         if (newState == BluetoothProfile.STATE_CONNECTED) {
+          refreshGattCache(gatt)
+          Thread.sleep(600)
           gatt.discoverServices()
         }
       }
@@ -473,6 +479,19 @@ class ExpoFmdnModule : Module() {
       char.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
       @Suppress("DEPRECATION")
       gatt.writeCharacteristic(char)
+    }
+  }
+
+  /** Force clear the GATT cache via hidden refresh() method */
+  private fun refreshGattCache(gatt: BluetoothGatt): Boolean {
+    return try {
+      val refreshMethod = BluetoothGatt::class.java.getMethod("refresh")
+      val result = refreshMethod.invoke(gatt) as Boolean
+      Log.i(TAG, "GATT cache refresh: $result")
+      result
+    } catch (e: Exception) {
+      Log.w(TAG, "GATT cache refresh not available: ${e.message}")
+      false
     }
   }
 
