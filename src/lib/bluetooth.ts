@@ -243,8 +243,10 @@ export const BLEService = {
     const BEACON_ACTIONS   = 'fe2c1238-8366-4814-8eb0-01de32100bea'
 
     try {
+      // Cancel any stale connection first
+      await getBleManager().cancelDeviceConnection(deviceId).catch(() => {})
       console.log(`[FMDN] Provisioning for ${deviceId}...`)
-      const device = await getBleManager().connectToDevice(deviceId, { timeout: 10000, refreshGatt: 'OnConnected' })
+      const device = await getBleManager().connectToDevice(deviceId, { timeout: 20000, autoConnect: true, refreshGatt: 'OnConnected' })
       await device.discoverAllServicesAndCharacteristics()
 
       const services = await device.services()
@@ -266,22 +268,8 @@ export const BLEService = {
       const eikBytes: number[] = []
       for (let i = 0; i < 32; i++) eikBytes.push(Math.floor(Math.random() * 256))
 
-      // Step 1: Write account key to fe2c1236 (first write on factory-reset = becomes owner)
-      console.log('[FMDN] Writing account key to fe2c1236...')
-      try {
-        await getBleManager().writeCharacteristicWithResponseForDevice(
-          deviceId, FMDN_SVC, ACCOUNT_KEY_CHAR, this._toBase64(accountKeyBytes))
-        console.log('✅ [FMDN] Account key written (write-with-response)')
-      } catch {
-        try {
-          await getBleManager().writeCharacteristicWithoutResponseForDevice(
-            deviceId, FMDN_SVC, ACCOUNT_KEY_CHAR, this._toBase64(accountKeyBytes))
-          console.log('✅ [FMDN] Account key written (write-no-response)')
-        } catch (e) {
-          console.warn('[FMDN] Account key write failed:', (e as Error)?.message)
-        }
-      }
-      await new Promise(r => setTimeout(r, 500))
+      // AccountKey is NOT written to fe2c1236 (MicflipFinder APK doesn't do this)
+      // It's only used for HMAC/AES-ECB crypto in the Set EIK payload
 
       // Step 2: Read nonce from Beacon Actions
       let nonce: number[] = []
@@ -300,22 +288,32 @@ export const BLEService = {
         console.warn('[FMDN] Nonce read failed:', (e as Error)?.message)
       }
 
-      // Step 3: Build Set EIK payload with HMAC auth using account key
-      // Auth = HMAC-SHA256(account_key, protocol_version || nonce || data_id || data_length || eik)
-      const dataId = 0x02
-      const dataLen = eikBytes.length
-      const hmacInput = new Uint8Array([protocolVersion, ...nonce, dataId, dataLen, ...eikBytes])
-      const hmacInputWA = CryptoJS.lib.WordArray.create(hmacInput)
+      // Step 3: AES-ECB encrypt EIK with accountKey (from MicflipFinder APK reverse engineering)
       const accountKeyWA = CryptoJS.lib.WordArray.create(new Uint8Array(accountKeyBytes))
+      const eikWA = CryptoJS.lib.WordArray.create(new Uint8Array(eikBytes))
+      const eikEncrypted = CryptoJS.AES.encrypt(eikWA, accountKeyWA, {
+        mode: CryptoJS.mode.ECB,
+        padding: CryptoJS.pad.NoPadding,
+      })
+      const eikEncBytes: number[] = []
+      const eikEncHex = eikEncrypted.ciphertext.toString(CryptoJS.enc.Hex)
+      for (let i = 0; i < eikEncHex.length; i += 2) eikEncBytes.push(parseInt(eikEncHex.slice(i, i + 2), 16))
+
+      // Step 4: HMAC = HMAC-SHA256(accountKey, version || nonce || 0x02 || 0x28 || eikEncrypted)
+      const dataId = 0x02
+      const dLen = 0x28 // 40 = 8 (auth) + 32 (encrypted EIK)
+      const hmacInput = new Uint8Array([protocolVersion, ...nonce, dataId, dLen, ...eikEncBytes])
+      const hmacInputWA = CryptoJS.lib.WordArray.create(hmacInput)
       const hmacFull = CryptoJS.HmacSHA256(hmacInputWA, accountKeyWA)
-      const authHex = hmacFull.toString(CryptoJS.enc.Hex).slice(0, 16) // 8 bytes
+      const authHex = hmacFull.toString(CryptoJS.enc.Hex).slice(0, 16)
       const authBytes: number[] = []
       for (let i = 0; i < 16; i += 2) authBytes.push(parseInt(authHex.slice(i, i + 2), 16))
 
-      const setEikPayload = [dataId, dataLen + 8, ...authBytes, ...eikBytes]
-      console.log(`[FMDN] Set EIK payload (${setEikPayload.length} bytes): ${setEikPayload.slice(0, 12).map(b => b.toString(16).padStart(2, '0')).join(' ')}...`)
+      // Payload: [0x02, 0x28, auth(8b), eikEncrypted(32b)] = 42 bytes
+      const setEikPayload = [dataId, dLen, ...authBytes, ...eikEncBytes]
+      console.log(`[FMDN] Set EIK (AES-ECB encrypted): ${setEikPayload.slice(0, 12).map(b => b.toString(16).padStart(2, '0')).join(' ')}...`)
 
-      // Step 4: Write Set EIK
+      // Step 5: Write to fe2c1238 (Beacon Actions) — NOT fe2c1236
       let eikWritten = false
       try {
         await getBleManager().writeCharacteristicWithResponseForDevice(
@@ -323,17 +321,7 @@ export const BLEService = {
         console.log('✅ [FMDN] EIK written (write-with-response)!')
         eikWritten = true
       } catch (e) {
-        console.warn('[FMDN] EIK write-with-response failed:', (e as Error)?.message)
-        // Fallback: try without auth (simple payload)
-        try {
-          const simplePayload = [dataId, dataLen, ...eikBytes]
-          await getBleManager().writeCharacteristicWithResponseForDevice(
-            deviceId, FMDN_SVC, BEACON_ACTIONS, this._toBase64(simplePayload))
-          console.log('✅ [FMDN] EIK written (simple, no auth)')
-          eikWritten = true
-        } catch {
-          console.warn('[FMDN] EIK simple write also failed')
-        }
+        console.warn(`[FMDN] EIK write-with-response failed: ${(e as Error)?.message?.slice(0, 60)}`)
       }
 
       await getBleManager().cancelDeviceConnection(deviceId).catch(() => {})
