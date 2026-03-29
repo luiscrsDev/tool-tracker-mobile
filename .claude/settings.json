@@ -1,0 +1,9 @@
+{
+  "disableAllHooks": false,
+  "hooks": {
+    "PostToolUseFailure": []
+  },
+  "permissions": {
+    "defaultMode": "acceptEdits"
+  }
+}

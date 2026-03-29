@@ -337,7 +337,7 @@ export const BLEService = {
 
     try {
       console.log(`[FMDN Ring] Connecting to ${deviceId}...`)
-      const device = await getBleManager().connectToDevice(deviceId, { timeout: 10000 })
+      const device = await getBleManager().connectToDevice(deviceId, { timeout: 15000, autoConnect: true })
       await device.discoverAllServicesAndCharacteristics()
 
       // Try known FMDN service first, then all discovered
@@ -429,8 +429,9 @@ export const BLEService = {
     }
   },
 
-  // Beep — tenta múltiplos protocolos de trackers BLE (Tuya, iTAG, NUS, Immediate Alert)
-  async playTuyaSound(deviceId: string): Promise<boolean> {
+  // Beep — tenta múltiplos protocolos de trackers BLE
+  // Se eikB64 é fornecido, tenta FMDN ring autenticado quando FE2C é encontrado
+  async playTuyaSound(deviceId: string, eikB64?: string): Promise<boolean> {
     // Encode byte array → base64
     const toBase64 = (bytes: number[]): string => {
       const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
@@ -485,29 +486,63 @@ export const BLEService = {
       let sent = false
 
       // ── 0. Google FMDN (Find My Device Network) — ring via Beacon Actions ──
-      // Characteristic: FE2C1238-8366-4814-8EB0-01DE32100BEA
-      // Ring = Data ID 0x05, auth 8 bytes (arbitrary if UTP mode), ring_all=0xFF, timeout 50 deciseconds, volume high
       if (!sent) {
+        const FMDN_SVC  = '0000fe2c-0000-1000-8000-00805f9b34fb'
         const FMDN_CHAR = 'fe2c1238-8366-4814-8eb0-01de32100bea'
-        // Try each service that might host the FMDN beacon actions characteristic
-        const candidateSvcs = [
-          '0000feaa-0000-1000-8000-00805f9b34fb',  // FEAA (Eddystone/FMDN)
-          ...svcList, // try all discovered services
-        ]
-        const fakeAuth = [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00] // arbitrary auth (works in UTP mode)
-        const ringPayload = [
-          0x05,       // Data ID = Ring
-          0x0C,       // Data length = 12
-          ...fakeAuth, // 8 bytes auth (arbitrary)
-          0xFF,       // Ring all components
-          0x00, 0x32, // Timeout = 50 deciseconds (5 sec)
-          0x03,       // Volume = high
-        ]
-        for (const svc of candidateSvcs) {
-          sent = await tryWrite(svc, FMDN_CHAR, toBase64(ringPayload))
-          if (sent) {
-            console.log(`✅ [BLE Beep] FMDN ring sent via service ${svc}`)
-            break
+        const hasFmdn = svcList.some(u => u.toLowerCase().includes('fe2c'))
+
+        if (hasFmdn) {
+          console.log(`[BLE Beep] FE2C encontrado! ${eikB64 ? 'Ring autenticado com EIK' : 'Ring sem auth'}`)
+
+          if (eikB64) {
+            // ── RING AUTENTICADO — lê nonce, calcula HMAC, envia ──
+            try {
+              const readResult = await getBleManager().readCharacteristicForDevice(deviceId, FMDN_SVC, FMDN_CHAR)
+              if (readResult.value) {
+                const raw = this._fromBase64(readResult.value)
+                if (raw.length >= 9) {
+                  const protocolVersion = raw[0]
+                  const nonce = raw.slice(1, 9)
+                  console.log(`[FMDN Ring] Nonce: ${nonce.map(b => b.toString(16).padStart(2, '0')).join(' ')}`)
+
+                  // Derive Ring Key = SHA256(EIK || 0x02) truncated to 8 bytes
+                  const eikBytes = this._fromBase64(eikB64)
+                  const eikWithSuffix = CryptoJS.lib.WordArray.create(new Uint8Array([...eikBytes, 0x02]))
+                  const ringKeyFull = CryptoJS.SHA256(eikWithSuffix)
+                  const ringKeyHex = ringKeyFull.toString(CryptoJS.enc.Hex).slice(0, 16)
+                  const ringKey = CryptoJS.enc.Hex.parse(ringKeyHex)
+
+                  // Additional data: ring_all, timeout 60 deciseconds, volume high
+                  const additionalData = [0xFF, 0x00, 0x3C, 0x03]
+                  const dataId = 0x05
+                  const dataLen = additionalData.length
+
+                  // HMAC auth
+                  const hmacInput = new Uint8Array([protocolVersion, ...nonce, dataId, dataLen, ...additionalData])
+                  const hmacInputWA = CryptoJS.lib.WordArray.create(hmacInput)
+                  const hmacFull = CryptoJS.HmacSHA256(hmacInputWA, ringKey)
+                  const authHex = hmacFull.toString(CryptoJS.enc.Hex).slice(0, 16)
+                  const authBytes: number[] = []
+                  for (let i = 0; i < 16; i += 2) authBytes.push(parseInt(authHex.slice(i, i + 2), 16))
+
+                  const ringPayload = [dataId, dataLen + 8, ...authBytes, ...additionalData]
+                  console.log(`[FMDN Ring] Payload: ${ringPayload.map(b => b.toString(16).padStart(2, '0')).join(' ')}`)
+
+                  sent = await tryWrite(FMDN_SVC, FMDN_CHAR, toBase64(ringPayload))
+                  if (sent) console.log(`✅ [FMDN Ring] Ring autenticado enviado!`)
+                }
+              }
+            } catch (e) {
+              console.warn('[FMDN Ring] Auth ring failed:', (e as Error)?.message)
+            }
+          }
+
+          // Fallback: ring sem auth (funciona em UTP mode)
+          if (!sent) {
+            const fakeAuth = [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
+            const ringPayload = [0x05, 0x0C, ...fakeAuth, 0xFF, 0x00, 0x32, 0x03]
+            sent = await tryWrite(FMDN_SVC, FMDN_CHAR, toBase64(ringPayload))
+            if (sent) console.log(`✅ [BLE Beep] FMDN ring (sem auth) enviado`)
           }
         }
       }

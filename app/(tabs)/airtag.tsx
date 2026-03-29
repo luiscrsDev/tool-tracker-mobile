@@ -8,6 +8,7 @@ import { useBluetooth } from '@/context/BluetoothContext'
 import { useTools } from '@/context/ToolsContext'
 import { useTags } from '@/context/TagsContext'
 import { useAuth } from '@/context/AuthContext'
+import { provisionTracker, ringTracker } from '@/modules/expo-fmdn/src'
 
 // UUIDs conhecidos para referência
 const KNOWN_UUIDS: Record<string, string> = {
@@ -29,12 +30,19 @@ interface PairingDevice {
   manufacturerData?: string | null
 }
 
-// Returns true for Apple Find My accessories (rotating MAC — must use mfr data as stable key)
+// Returns true for Apple Find My tracker accessories (type 0x12)
+// Filters out regular Apple devices (iPhones, AirPods, Watches) that also use 4C 00
 function isAppleFindMy(mfrData?: string | null): boolean {
   if (!mfrData) return false
   try {
     const bytes = Uint8Array.from(atob(mfrData), c => c.charCodeAt(0))
-    return bytes[0] === 0x4C && bytes[1] === 0x00
+    if (bytes[0] !== 0x4C || bytes[1] !== 0x00) return false
+    // Type byte 0x12 = Find My accessory, length 0x19 = 25 bytes
+    // Without type check, regular iPhones/AirPods also match
+    if (bytes.length >= 3 && bytes[2] === 0x12) return true
+    // Some FMDN trackers use different type bytes — accept if mfr data is short (< 10 bytes = likely tracker ad)
+    if (bytes.length <= 10) return true
+    return false
   } catch { return false }
 }
 
@@ -128,15 +136,11 @@ export default function AirTagScreen() {
             e.stopPropagation()
             setBeepingId(item.id)
             try {
-              if (scanning) await stopScanning()
-              // Tenta FMDN ring autenticado primeiro (se tag tem EIK)
+              // Para scan + delay curto — Samsung precisa de scan parado pra GATT
+              if (scanning) { await stopScanning(); await new Promise(r => setTimeout(r, 500)) }
               const tagRec = tags.find(t => t.tag_id === item.id)
-              if (tagRec?.eik) {
-                const ok = await ringFMDN(item.id, tagRec.eik)
-                if (ok) { setBeepingId(null); return }
-              }
-              // Fallback: protocolos genéricos (playTuyaSound já tenta tudo incluindo Immediate Alert)
-              await playTuyaSound(item.id)
+                || tags.find(t => t.eik && item.name?.includes('Find') && t.name?.includes('Find'))
+              await playTuyaSound(item.id, tagRec?.eik ?? undefined)
             } catch { /* não suporta beep */ } finally {
               setBeepingId(null)
             }
@@ -223,25 +227,23 @@ export default function AirTagScreen() {
       // Parar scan ANTES de qualquer operação GATT (Android não permite scan + GATT simultâneo)
       if (scanning) await stopScanning()
 
-      // Determinar o BLE identifier estável
-      let bleTagId: string
-      if (isAppleFindMy(sheet.manufacturerData)) {
-        console.log('[Pair] Lendo stable ID via GATT...')
-        const gattId = await readStableId(sheet.id)
-        bleTagId = gattId ?? stableTagId(sheet)
-        console.log(`[Pair] tag_id final: ${bleTagId}`)
-      } else {
-        bleTagId = stableTagId(sheet)
-      }
+      // Determinar o BLE identifier estável (usar MAC ou mfr data — sem GATT para não conflitar)
+      const bleTagId = stableTagId(sheet)
+      console.log(`[Pair] tag_id: ${bleTagId}`)
 
-      // 1. Provisionar EIK no tracker (FMDN — permite ring autenticado depois)
+      // 1. Provisionar EIK via módulo nativo (GATT direto — bypassa react-native-ble-plx)
       let eik: string | null = null
       try {
-        console.log('[Pair] Provisionando EIK no tracker...')
-        eik = await provisionEIK(sheet.id)
-        console.log(`[Pair] EIK: ${eik ? 'OK' : 'não suportado'}`)
-      } catch {
-        console.warn('[Pair] EIK provisioning failed, continuing without')
+        console.log('[Pair] Provisionando tracker via módulo nativo FMDN...')
+        const result = await provisionTracker(sheet.id)
+        if (result) {
+          eik = result.eik
+          console.log(`✅ [Pair] EIK provisionada: ${eik.slice(0, 10)}...`)
+        } else {
+          console.warn('[Pair] FMDN provisioning retornou null — tracker pode não suportar ou já estar provisionado')
+        }
+      } catch (e) {
+        console.warn('[Pair] FMDN provisioning failed:', (e as Error)?.message)
       }
 
       // 2. Cria/atualiza o registro na tabela tags
@@ -276,13 +278,18 @@ export default function AirTagScreen() {
   const pairedTools = tools.filter(t => t.assigned_tag)
 
   // Dispositivos encontrados no scan que ainda não estão pareados
-  // Só mostra: devices com nome contendo "find" OU devices Apple Find My (mfr 4C00)
+  // Filtra pelo nome "find" (ex: "Find Easy") — ignora iPhones, AirPods, etc.
   const pairedTagIds = registeredBleIds
+  const now = Date.now()
   const unpairedDevices = devices
     .filter(d => {
+      // Only show entries seen in last 8 seconds (handles MAC rotation)
+      if ((d as any)._lastSeen && (now - (d as any)._lastSeen) > 8000) return false
       const tagId = stableTagId(d)
       if (pairedTagIds.has(tagId) || pairedTagIds.has(d.id)) return false
-      return (d.name?.toLowerCase().includes('find') ?? false) || isAppleFindMy(d.manufacturerData)
+      const name = d.name?.toLowerCase() ?? ''
+      if (name.includes('find') || name.includes('tag') || name.includes('tracker')) return true
+      return isAppleFindMy(d.manufacturerData)
     })
     .sort((a, b) => b.rssi - a.rssi) // strongest signal (closest) first
 

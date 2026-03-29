@@ -11,7 +11,7 @@ interface BluetoothContextType {
   connectToDevice: (deviceId: string) => Promise<boolean>
   disconnectDevice: (deviceId: string) => Promise<void>
   playSound: (deviceId: string) => Promise<boolean>
-  playTuyaSound: (deviceId: string) => Promise<boolean>
+  playTuyaSound: (deviceId: string, eikB64?: string) => Promise<boolean>
   ringFMDN: (deviceId: string, eikB64: string) => Promise<boolean>
   provisionEIK: (deviceId: string) => Promise<string | null>
   inspectDevice: (deviceId: string) => Promise<{ services: { uuid: string; characteristics: string[] }[] } | null>
@@ -39,42 +39,19 @@ export function BluetoothProvider({ children }: { children: React.ReactNode }) {
       await BLEService.startScanning(
         device => {
           setDevices(prev => {
-            // For Apple Find My devices (mfr starts 4C00): both MAC and mfr data rotate,
-            // so there is no stable dedup key. Strategy: keep only the strongest-RSSI
-            // Apple entries up to a cap of 10, replacing the weakest when cap is exceeded.
-            const isApple = (() => {
-              if (!device.manufacturerData) return false
-              try {
-                const b = Uint8Array.from(atob(device.manufacturerData), c => c.charCodeAt(0))
-                return b[0] === 0x4C && b[1] === 0x00
-              } catch { return false }
-            })()
+            const now = Date.now()
 
-            // Normal dedup by MAC
+            // Tag the device with a timestamp
+            const tagged = { ...device, _lastSeen: now }
+
+            // Dedup by MAC — update existing entry with fresh timestamp + RSSI
             const byMac = prev.findIndex(d => d.id === device.id)
             if (byMac !== -1) {
-              return prev.map((d, i) => (i === byMac ? device : d))
+              return prev.map((d, i) => (i === byMac ? tagged : d))
             }
 
-            if (isApple) {
-              const appleEntries = prev.filter(d => {
-                if (!d.manufacturerData) return false
-                try {
-                  const b = Uint8Array.from(atob(d.manufacturerData), c => c.charCodeAt(0))
-                  return b[0] === 0x4C && b[1] === 0x00
-                } catch { return false }
-              })
-              if (appleEntries.length >= 10) {
-                // Replace the weakest Apple entry if new one is stronger
-                const weakest = appleEntries.reduce((a, b) => (a.rssi < b.rssi ? a : b))
-                if (device.rssi > weakest.rssi) {
-                  return prev.map(d => d.id === weakest.id ? device : d)
-                }
-                return prev // list full and new device is weaker — discard
-              }
-            }
-
-            return [...prev, device]
+            // New MAC — just add (stale entries filtered at display layer)
+            return [...prev, tagged]
           })
         },
         err => {
@@ -132,9 +109,9 @@ export function BluetoothProvider({ children }: { children: React.ReactNode }) {
     }
   }, [])
 
-  const playTuyaSound = useCallback(async (deviceId: string) => {
+  const playTuyaSound = useCallback(async (deviceId: string, eikB64?: string) => {
     setError(null)
-    return BLEService.playTuyaSound(deviceId)
+    return BLEService.playTuyaSound(deviceId, eikB64)
   }, [])
 
   const inspectDevice = useCallback(async (deviceId: string) => {
