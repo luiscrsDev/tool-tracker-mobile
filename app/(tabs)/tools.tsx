@@ -83,11 +83,6 @@ export default function ToolsScreen() {
       </View>
       <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 2 }}>
         <Text style={{ color: '#666', fontSize: 12 }}>{tool.type}</Text>
-        {tool.battery != null && (
-          <Text style={{ color: tool.battery < 20 ? '#991b1b' : '#94A3B8', fontSize: 11 }}>
-            🔋 {tool.battery}%
-          </Text>
-        )}
       </View>
     </TouchableOpacity>
   )

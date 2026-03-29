@@ -7,10 +7,12 @@ import {
   Alert,
   Linking,
   ActivityIndicator,
+  Image,
 } from 'react-native'
 import { useLocalSearchParams, useRouter } from 'expo-router'
 import { useTools } from '@/context/ToolsContext'
 import { useTags } from '@/context/TagsContext'
+import { useSites } from '@/context/SitesContext'
 import { useLocation } from '@/context/LocationContext'
 import { supabase } from '@/lib/supabase'
 
@@ -28,6 +30,7 @@ export default function ToolDetailScreen() {
   const router = useRouter()
   const { tools, deleteTool, unlinkTag } = useTools()
   const { getTagById } = useTags()
+  const { resolveLocation } = useSites()
   const { allToolLocations, trackedTools } = useLocation()
   const [recentHistory, setRecentHistory] = useState<LocationRecord[]>([])
   const [loadingHistory, setLoadingHistory] = useState(false)
@@ -109,11 +112,6 @@ export default function ToolDetailScreen() {
     )
   }
 
-  const batteryColor = !tool.battery ? '#94A3B8'
-    : tool.battery < 20 ? '#EF4444'
-    : tool.battery < 50 ? '#F59E0B'
-    : '#10B981'
-
   return (
     <View style={{ flex: 1, backgroundColor: '#F8FAFC' }}>
       {/* Header */}
@@ -159,6 +157,20 @@ export default function ToolDetailScreen() {
 
       <ScrollView contentContainerStyle={{ padding: 16, gap: 14 }}>
 
+        {/* Photos */}
+        {tool.images && tool.images.length > 0 && (
+          <View style={{ flexDirection: 'row', gap: 8 }}>
+            {tool.images.map((img, i) => (
+              <View key={i} style={{
+                flex: i === 0 ? 2 : 1, aspectRatio: i === 0 ? 4/3 : 1,
+                borderRadius: 10, overflow: 'hidden', backgroundColor: '#F1F5F9',
+              }}>
+                <Image source={{ uri: img }} style={{ width: '100%', height: '100%' }} />
+              </View>
+            ))}
+          </View>
+        )}
+
         {/* Specs */}
         <View style={{
           backgroundColor: 'white', borderRadius: 12, padding: 16,
@@ -178,18 +190,6 @@ export default function ToolDetailScreen() {
               </View>
             ))}
 
-            {/* Battery */}
-            {tool.battery != null && (
-              <View>
-                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-                  <Text style={{ fontSize: 13, color: '#64748B' }}>Bateria</Text>
-                  <Text style={{ fontSize: 13, fontWeight: '700', color: batteryColor }}>{tool.battery}%</Text>
-                </View>
-                <View style={{ height: 6, backgroundColor: '#F1F5F9', borderRadius: 3, overflow: 'hidden' }}>
-                  <View style={{ height: 6, width: `${tool.battery}%`, backgroundColor: batteryColor, borderRadius: 3 }} />
-                </View>
-              </View>
-            )}
 
             {/* Tag vinculado */}
             <View style={{ borderTopWidth: 1, borderTopColor: '#F1F5F9', paddingTop: 12, marginTop: 2 }}>
@@ -236,13 +236,8 @@ export default function ToolDetailScreen() {
               ÚLTIMA LOCALIZAÇÃO
             </Text>
             <Text style={{ fontSize: 14, fontWeight: '700', color: '#1E40AF', marginBottom: 6 }}>
-              {lastLocation.latitude.toFixed(5)}, {lastLocation.longitude.toFixed(5)}
+              {resolveLocation(lastLocation.latitude, lastLocation.longitude)}
             </Text>
-            {lastLocation.address && (
-              <Text style={{ fontSize: 12, color: '#64748B', lineHeight: 18, marginBottom: 10 }}>
-                {lastLocation.address}
-              </Text>
-            )}
             {lastLocation.timestamp && (
               <Text style={{ fontSize: 11, color: '#CBD5E1', marginBottom: 12 }}>
                 {new Date(lastLocation.timestamp).toLocaleString('pt-BR')}
@@ -296,13 +291,8 @@ export default function ToolDetailScreen() {
                   }} />
                   <View style={{ flex: 1 }}>
                     <Text style={{ fontSize: 12, fontWeight: '600', color: '#1E40AF' }}>
-                      {record.latitude.toFixed(5)}, {record.longitude.toFixed(5)}
+                      {resolveLocation(record.latitude, record.longitude)}
                     </Text>
-                    {record.address && (
-                      <Text style={{ fontSize: 11, color: '#94A3B8', marginTop: 2 }} numberOfLines={1}>
-                        {record.address}
-                      </Text>
-                    )}
                     <Text style={{ fontSize: 10, color: '#CBD5E1', marginTop: 2 }}>
                       {new Date(record.recorded_at).toLocaleString('pt-BR')}
                     </Text>

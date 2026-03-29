@@ -25,6 +25,13 @@ const menuItems = [
     color: '#8B5CF6',
   },
   {
+    icon: '🏢',
+    label: 'Sites',
+    desc: 'Depósitos, obras e escritórios',
+    path: '/(tabs)/sites',
+    color: '#F97316',
+  },
+  {
     icon: '⚙️',
     label: 'Configurações',
     desc: 'Alertas, range e conta',

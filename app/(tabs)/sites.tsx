@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import {
   View, Text, ScrollView, TouchableOpacity, TextInput, Alert, Modal, ActivityIndicator,
+  KeyboardAvoidingView, Platform,
 } from 'react-native'
 import { Ionicons } from '@expo/vector-icons'
 import { useAuth } from '@/context/AuthContext'
@@ -150,7 +151,9 @@ export default function SitesScreen() {
 
       {/* Form Modal */}
       <Modal visible={showForm} transparent animationType="slide" onRequestClose={resetForm}>
+        <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
         <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' }}>
+          <ScrollView contentContainerStyle={{ flexGrow: 1, justifyContent: 'flex-end' }}>
           <View style={{
             backgroundColor: 'white', borderTopLeftRadius: 24, borderTopRightRadius: 24,
             padding: 24, paddingBottom: 40,
@@ -165,37 +168,52 @@ export default function SitesScreen() {
               style={{ borderWidth: 1, borderColor: '#E2E8F0', borderRadius: 8, padding: 10, fontSize: 14, marginBottom: 12 }}
             />
 
-            <Text style={{ fontSize: 12, fontWeight: '600', color: '#64748B', marginBottom: 6 }}>Endereço</Text>
+            <Text style={{ fontSize: 12, fontWeight: '600', color: '#64748B', marginBottom: 6 }}>Endereço *</Text>
             <TextInput
-              value={address} onChangeText={setAddress} placeholder="Ex: 1234 NW 5th St, Miami"
-              style={{ borderWidth: 1, borderColor: '#E2E8F0', borderRadius: 8, padding: 10, fontSize: 14, marginBottom: 12 }}
+              value={address} onChangeText={setAddress} placeholder="Ex: 1234 NW 5th St, Miami, FL"
+              style={{ borderWidth: 1, borderColor: '#E2E8F0', borderRadius: 8, padding: 10, fontSize: 14, marginBottom: 8 }}
             />
 
             <View style={{ flexDirection: 'row', gap: 8, marginBottom: 12 }}>
-              <View style={{ flex: 1 }}>
-                <Text style={{ fontSize: 12, fontWeight: '600', color: '#64748B', marginBottom: 6 }}>Latitude *</Text>
-                <TextInput
-                  value={lat} onChangeText={setLat} placeholder="25.789" keyboardType="decimal-pad"
-                  style={{ borderWidth: 1, borderColor: '#E2E8F0', borderRadius: 8, padding: 10, fontSize: 14 }}
-                />
-              </View>
-              <View style={{ flex: 1 }}>
-                <Text style={{ fontSize: 12, fontWeight: '600', color: '#64748B', marginBottom: 6 }}>Longitude *</Text>
-                <TextInput
-                  value={lng} onChangeText={setLng} placeholder="-80.193" keyboardType="decimal-pad"
-                  style={{ borderWidth: 1, borderColor: '#E2E8F0', borderRadius: 8, padding: 10, fontSize: 14 }}
-                />
-              </View>
+              <TouchableOpacity onPress={async () => {
+                if (!address.trim()) { Alert.alert('', 'Digite o endereço primeiro'); return }
+                try {
+                  const results = await Location.geocodeAsync(address.trim())
+                  if (results.length > 0) {
+                    setLat(results[0].latitude.toFixed(6))
+                    setLng(results[0].longitude.toFixed(6))
+                  } else {
+                    Alert.alert('Não encontrado', 'Endereço não encontrado. Tente ser mais específico.')
+                  }
+                } catch { Alert.alert('Erro', 'Falha ao buscar endereço') }
+              }} style={{
+                flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
+                paddingVertical: 10, borderRadius: 8, backgroundColor: '#EFF6FF',
+                borderWidth: 1, borderColor: '#BFDBFE',
+              }}>
+                <Ionicons name="search" size={16} color="#2563EB" />
+                <Text style={{ color: '#2563EB', fontWeight: '600', fontSize: 12 }}>Buscar endereço</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity onPress={useCurrentLocation} style={{
+                flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
+                paddingVertical: 10, borderRadius: 8, backgroundColor: '#F0FDF4',
+                borderWidth: 1, borderColor: '#BBF7D0',
+              }}>
+                <Ionicons name="navigate" size={16} color="#10B981" />
+                <Text style={{ color: '#10B981', fontWeight: '600', fontSize: 12 }}>Localização atual</Text>
+              </TouchableOpacity>
             </View>
 
-            <TouchableOpacity onPress={useCurrentLocation} style={{
-              flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
-              paddingVertical: 10, borderRadius: 8, backgroundColor: '#EFF6FF', marginBottom: 12,
-              borderWidth: 1, borderColor: '#BFDBFE',
-            }}>
-              <Ionicons name="navigate" size={16} color="#2563EB" />
-              <Text style={{ color: '#2563EB', fontWeight: '600', fontSize: 13 }}>Usar localização atual</Text>
-            </TouchableOpacity>
+            {(lat && lng) ? (
+              <Text style={{ fontSize: 11, color: '#10B981', marginBottom: 12 }}>
+                📍 {lat}, {lng}
+              </Text>
+            ) : (
+              <Text style={{ fontSize: 11, color: '#94A3B8', marginBottom: 12 }}>
+                Use um dos botões acima para obter as coordenadas
+              </Text>
+            )}
 
             <Text style={{ fontSize: 12, fontWeight: '600', color: '#64748B', marginBottom: 6 }}>Raio (metros)</Text>
             <TextInput
@@ -216,7 +234,9 @@ export default function SitesScreen() {
               </TouchableOpacity>
             </View>
           </View>
+          </ScrollView>
         </View>
+        </KeyboardAvoidingView>
       </Modal>
     </View>
   )
