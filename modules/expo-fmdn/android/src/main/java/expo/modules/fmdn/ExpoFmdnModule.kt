@@ -9,10 +9,17 @@ import android.util.Log
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
 import expo.modules.kotlin.Promise
+import java.security.KeyFactory
+import java.security.KeyPairGenerator
 import java.security.MessageDigest
 import java.security.SecureRandom
+import java.security.interfaces.ECPublicKey
+import java.security.spec.ECGenParameterSpec
+import java.security.spec.ECPoint
+import java.security.spec.ECPublicKeySpec
 import java.util.UUID
 import javax.crypto.Cipher
+import javax.crypto.KeyAgreement
 import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
 import kotlin.concurrent.thread
@@ -49,6 +56,56 @@ class ExpoFmdnModule : Module() {
         gatt.disconnect()
         gatt.close()
         promise.resolve(hasService)
+      }
+    }
+
+    // GFPS Key-based Pairing: full handshake → account key → EIK
+    // antiSpoofingPubKey: base64 of 64-byte public key (x||y)
+    AsyncFunction("gfpsPair") { macAddress: String, antiSpoofingPubKey: String, promise: Promise ->
+      thread {
+        try {
+          val resolved = java.util.concurrent.atomic.AtomicBoolean(false)
+          val wrappedPromise = object : Promise {
+            override fun resolve(value: Any?) { if (resolved.compareAndSet(false, true)) promise.resolve(value) }
+            override fun reject(code: String, message: String?, cause: Throwable?) { if (resolved.compareAndSet(false, true)) promise.reject(code, message, cause) }
+          }
+          thread {
+            Thread.sleep(30000) // 30s timeout for full GFPS flow
+            if (resolved.compareAndSet(false, true)) {
+              Log.w(TAG, "[GFPS] Timeout after 30s")
+              promise.reject("FMDN_TIMEOUT", "GFPS pairing timed out", null)
+            }
+          }
+          gfpsPairImpl(macAddress, antiSpoofingPubKey, wrappedPromise)
+        } catch (e: Exception) {
+          Log.e(TAG, "[GFPS] Error", e)
+          promise.reject("FMDN_ERROR", e.message ?: "Unknown error", e)
+        }
+      }
+    }
+
+    // Bond with device at Android OS level (enables write-with-response on protected chars)
+    AsyncFunction("bondDevice") { macAddress: String, promise: Promise ->
+      thread {
+        try {
+          val device = adapter?.getRemoteDevice(macAddress)
+          if (device == null) {
+            promise.reject("FMDN_ERROR", "Device not found", null)
+            return@thread
+          }
+          @SuppressLint("MissingPermission")
+          val result = device.createBond()
+          Log.i(TAG, "[Bond] createBond() for $macAddress: $result (bondState=${device.bondState})")
+          // Wait for bond to complete
+          Thread.sleep(5000)
+          @SuppressLint("MissingPermission")
+          val bondState = device.bondState
+          Log.i(TAG, "[Bond] Final bondState: $bondState (10=bonding, 12=bonded, 11=none)")
+          promise.resolve(bondState == BluetoothDevice.BOND_BONDED)
+        } catch (e: Exception) {
+          Log.e(TAG, "[Bond] Error", e)
+          promise.reject("FMDN_ERROR", e.message, e)
+        }
       }
     }
 
@@ -464,6 +521,280 @@ class ExpoFmdnModule : Module() {
         gatt.disconnect(); gatt.close()
       }
     })
+  }
+
+  // ── GFPS Key-based Pairing + EIK provisioning ──────────────────────────
+
+  /**
+   * Full GFPS pairing: ECDH handshake → account key → EIK provision → ring ready.
+   * antiSpoofingPubKeyBase64: 64-byte Anti-Spoofing Public Key (x||y, uncompressed without 0x04 prefix)
+   * Returns { accountKey, eik } or rejects.
+   */
+  @SuppressLint("MissingPermission")
+  private fun gfpsPairImpl(macAddress: String, antiSpoofingPubKeyBase64: String, promise: Promise) {
+    val device = adapter?.getRemoteDevice(macAddress)
+    val context = appContext.reactContext
+    if (device == null || context == null) {
+      promise.reject("FMDN_ERROR", "Device or context not found", null)
+      return
+    }
+
+    // Generate our ECDH key pair (secp256r1)
+    val kpg = KeyPairGenerator.getInstance("EC")
+    kpg.initialize(ECGenParameterSpec("secp256r1"))
+    val seekerKeyPair = kpg.generateKeyPair()
+    val seekerPubKey = seekerKeyPair.public as ECPublicKey
+
+    // Extract our 64-byte public key (x || y, 32 bytes each)
+    val seekerPubKeyBytes = ByteArray(64)
+    val xBytes = seekerPubKey.w.affineX.toByteArray()
+    val yBytes = seekerPubKey.w.affineY.toByteArray()
+    // BigInteger may have leading zero byte — take last 32 bytes
+    System.arraycopy(xBytes, xBytes.size - 32, seekerPubKeyBytes, 0, 32)
+    System.arraycopy(yBytes, yBytes.size - 32, seekerPubKeyBytes, 32, 32)
+
+    // Decode Anti-Spoofing Public Key
+    val antiSpoofingPubKeyRaw = Base64.decode(antiSpoofingPubKeyBase64, Base64.NO_WRAP)
+
+    // Compute shared secret: ECDH(our_private, anti_spoofing_public)
+    val antiSpoofingPubKeySpec = ecPublicKeyFromBytes(antiSpoofingPubKeyRaw)
+    val keyAgreement = KeyAgreement.getInstance("ECDH")
+    keyAgreement.init(seekerKeyPair.private)
+    keyAgreement.doPhase(antiSpoofingPubKeySpec, true)
+    val sharedSecret = keyAgreement.generateSecret()
+
+    // K = SHA-256(shared_secret), first 16 bytes
+    val kFull = MessageDigest.getInstance("SHA-256").digest(sharedSecret)
+    val K = kFull.copyOfRange(0, 16)
+    Log.i(TAG, "[GFPS] AES key K derived (${K.joinToString(" ") { "%02x".format(it) }})")
+
+    // Generate 16-byte account key (starts with 0x04)
+    val accountKey = ByteArray(16).also { SecureRandom().nextBytes(it) }
+    accountKey[0] = 0x04
+
+    // Generate 32-byte EIK
+    val eik = ByteArray(32).also { SecureRandom().nextBytes(it) }
+
+    // Build encrypted request: [type=0x00, flags=0x00, provider_address(6B), salt(8B)]
+    val providerAddress = macToBytes(macAddress)
+    val salt = ByteArray(8).also { SecureRandom().nextBytes(it) }
+    val rawRequest = ByteArray(16)
+    rawRequest[0] = 0x00 // type: Key-based Pairing Request
+    rawRequest[1] = 0x40 // flags: bit 6 = request to write account key
+    System.arraycopy(providerAddress, 0, rawRequest, 2, 6)
+    System.arraycopy(salt, 0, rawRequest, 8, 8)
+
+    // AES-128-ECB encrypt request with K
+    val encryptedRequest = aesEncrypt(K, rawRequest)
+    Log.i(TAG, "[GFPS] Encrypted request: ${encryptedRequest.joinToString(" ") { "%02x".format(it) }}")
+
+    // Full write payload: encrypted_request (16B) + seeker_public_key (64B)
+    val writePayload = encryptedRequest + seekerPubKeyBytes
+
+    var step = 0 // 0=connect, 1=discover, 2=write request, 3=got response, 4=write account key, 5=provision EIK
+
+    device.connectGatt(context, true, object : BluetoothGattCallback() {
+      override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
+        if (newState == BluetoothProfile.STATE_CONNECTED) {
+          Log.i(TAG, "[GFPS] Connected, refreshing GATT cache...")
+          refreshGattCache(gatt)
+          step = 1
+          Thread.sleep(600)
+          gatt.discoverServices()
+        } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
+          if (step < 5) {
+            Log.w(TAG, "[GFPS] Disconnected at step $step (status=$status)")
+          }
+        }
+      }
+
+      override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
+        val service = gatt.getService(FMDN_SERVICE)
+        if (service == null) {
+          val allSvcs = gatt.services.map { it.uuid.toString() }
+          Log.e(TAG, "[GFPS] FE2C not found. Services: $allSvcs")
+          promise.reject("FMDN_NOT_FOUND", "FE2C not found", null)
+          gatt.disconnect(); gatt.close()
+          return
+        }
+
+        val kbpChar = service.getCharacteristic(KEY_BASED_PAIRING)
+        if (kbpChar == null) {
+          promise.reject("FMDN_ERROR", "Key-based Pairing char not found", null)
+          gatt.disconnect(); gatt.close()
+          return
+        }
+
+        // Enable notifications on Key-based Pairing characteristic
+        gatt.setCharacteristicNotification(kbpChar, true)
+        val descriptor = kbpChar.getDescriptor(UUID.fromString("00002902-0000-1000-8000-00805f9b34fb"))
+        if (descriptor != null) {
+          if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            gatt.writeDescriptor(descriptor, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
+          } else {
+            @Suppress("DEPRECATION")
+            descriptor.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+            @Suppress("DEPRECATION")
+            gatt.writeDescriptor(descriptor)
+          }
+        }
+
+        // Wait briefly for notifications to be enabled, then write request
+        Thread.sleep(300)
+        step = 2
+        Log.i(TAG, "[GFPS] Writing Key-based Pairing request (${writePayload.size} bytes)...")
+        writeCharacteristic(gatt, kbpChar, writePayload)
+      }
+
+      override fun onCharacteristicChanged(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, value: ByteArray) {
+        if (step == 2 && characteristic.uuid == KEY_BASED_PAIRING) {
+          // Got encrypted response from provider
+          Log.i(TAG, "[GFPS] Got response (${value.size} bytes)")
+          val decrypted = aesDecrypt(K, value)
+          Log.i(TAG, "[GFPS] Decrypted response: ${decrypted.joinToString(" ") { "%02x".format(it) }}")
+
+          if (decrypted[0] == 0x01.toByte()) {
+            Log.i(TAG, "✅ [GFPS] Key-based Pairing response validated!")
+            step = 3
+
+            // Write encrypted account key to fe2c1236
+            val encryptedAccountKey = aesEncrypt(K, accountKey)
+            Log.i(TAG, "[GFPS] Writing encrypted account key...")
+            val service = gatt.getService(FMDN_SERVICE)!!
+            val akChar = service.getCharacteristic(ACCOUNT_KEY_CHAR)!!
+            step = 4
+            writeCharacteristic(gatt, akChar, encryptedAccountKey)
+          } else {
+            Log.e(TAG, "[GFPS] Invalid response type: ${decrypted[0]}")
+            promise.reject("FMDN_ERROR", "Invalid GFPS response", null)
+            gatt.disconnect(); gatt.close()
+          }
+        }
+      }
+
+      // Legacy notify callback
+      @Deprecated("Required for API < 33")
+      override fun onCharacteristicChanged(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+          @Suppress("DEPRECATION")
+          onCharacteristicChanged(gatt, characteristic, characteristic.value ?: ByteArray(0))
+        }
+      }
+
+      override fun onCharacteristicWrite(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, status: Int) {
+        when (step) {
+          2 -> {
+            if (status == BluetoothGatt.GATT_SUCCESS) {
+              Log.i(TAG, "[GFPS] Key-based Pairing request written, waiting for response...")
+              // Response comes via onCharacteristicChanged (notify)
+            } else {
+              Log.e(TAG, "[GFPS] KBP write failed: $status")
+              promise.reject("FMDN_ERROR", "KBP write failed (status=$status)", null)
+              gatt.disconnect(); gatt.close()
+            }
+          }
+          4 -> {
+            if (status == BluetoothGatt.GATT_SUCCESS) {
+              Log.i(TAG, "✅ [GFPS] Account key written!")
+              // Now provision EIK using account key for auth
+              step = 5
+              provisionEikWithAccountKey(gatt, accountKey, eik, promise)
+            } else {
+              Log.e(TAG, "[GFPS] Account key write failed: $status")
+              promise.reject("FMDN_ERROR", "Account key write failed (status=$status)", null)
+              gatt.disconnect(); gatt.close()
+            }
+          }
+          5 -> {
+            // EIK write response
+            if (status == BluetoothGatt.GATT_SUCCESS) {
+              Log.i(TAG, "✅ [GFPS] EIK provisioned!")
+              val result = mapOf(
+                "accountKey" to Base64.encodeToString(accountKey, Base64.NO_WRAP),
+                "eik" to Base64.encodeToString(eik, Base64.NO_WRAP)
+              )
+              promise.resolve(result)
+            } else {
+              Log.e(TAG, "[GFPS] EIK write failed: $status")
+              promise.reject("FMDN_ERROR", "EIK write failed (status=$status)", null)
+            }
+            gatt.disconnect(); gatt.close()
+          }
+        }
+      }
+
+      override fun onCharacteristicRead(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, value: ByteArray, status: Int) {
+        if (step == 5) {
+          // Nonce read for EIK provisioning
+          if (status == BluetoothGatt.GATT_SUCCESS && value.size >= 9) {
+            val protocolVersion = value[0]
+            val nonce = value.copyOfRange(1, 9)
+            Log.i(TAG, "[GFPS] Nonce for EIK: ${nonce.joinToString(" ") { "%02x".format(it) }}")
+
+            // Build Set EIK with HMAC auth using account key
+            val dataId: Byte = SET_EIK
+            val hmacInput = byteArrayOf(protocolVersion) + nonce + byteArrayOf(dataId, eik.size.toByte()) + eik
+            val auth = hmacSha256(accountKey, hmacInput).copyOfRange(0, 8)
+            val payload = byteArrayOf(dataId, (8 + eik.size).toByte()) + auth + eik
+
+            val service = gatt.getService(FMDN_SERVICE)!!
+            val beaconActions = service.getCharacteristic(BEACON_ACTIONS)!!
+            writeCharacteristic(gatt, beaconActions, payload)
+          }
+        }
+      }
+
+      @Deprecated("Required for API < 33")
+      override fun onCharacteristicRead(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, status: Int) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+          @Suppress("DEPRECATION")
+          onCharacteristicRead(gatt, characteristic, characteristic.value ?: ByteArray(0), status)
+        }
+      }
+    })
+  }
+
+  @SuppressLint("MissingPermission")
+  private fun provisionEikWithAccountKey(gatt: BluetoothGatt, accountKey: ByteArray, eik: ByteArray, promise: Promise) {
+    // Read nonce from Beacon Actions first
+    val service = gatt.getService(FMDN_SERVICE) ?: return
+    val beaconActions = service.getCharacteristic(BEACON_ACTIONS) ?: return
+    gatt.readCharacteristic(beaconActions)
+    // Response handled in onCharacteristicRead at step 5
+  }
+
+  // ── Crypto helpers ─────────────────────────────────────────────────────
+
+  /** Convert MAC string "AA:BB:CC:DD:EE:FF" to 6-byte array */
+  private fun macToBytes(mac: String): ByteArray {
+    return mac.split(":").map { it.toInt(16).toByte() }.toByteArray()
+  }
+
+  /** Build ECPublicKey from 64-byte raw (x||y) */
+  private fun ecPublicKeyFromBytes(raw: ByteArray): ECPublicKey {
+    val kf = KeyFactory.getInstance("EC")
+    // Get the EC parameter spec from a generated key
+    val kpg = KeyPairGenerator.getInstance("EC")
+    kpg.initialize(ECGenParameterSpec("secp256r1"))
+    val params = (kpg.generateKeyPair().public as ECPublicKey).params
+    val x = java.math.BigInteger(1, raw.copyOfRange(0, 32))
+    val y = java.math.BigInteger(1, raw.copyOfRange(32, 64))
+    val point = ECPoint(x, y)
+    return kf.generatePublic(ECPublicKeySpec(point, params)) as ECPublicKey
+  }
+
+  /** AES-128-ECB encrypt */
+  private fun aesEncrypt(key: ByteArray, data: ByteArray): ByteArray {
+    val cipher = Cipher.getInstance("AES/ECB/NoPadding")
+    cipher.init(Cipher.ENCRYPT_MODE, SecretKeySpec(key, "AES"))
+    return cipher.doFinal(data)
+  }
+
+  /** AES-128-ECB decrypt */
+  private fun aesDecrypt(key: ByteArray, data: ByteArray): ByteArray {
+    val cipher = Cipher.getInstance("AES/ECB/NoPadding")
+    cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(key, "AES"))
+    return cipher.doFinal(data)
   }
 
   // ── Helpers ─────────────────────────────────────────────────────────────

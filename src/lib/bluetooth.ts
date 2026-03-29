@@ -99,7 +99,13 @@ export const BLEService = {
         }
 
         if (device) {
-          console.log(`📱 Device encontrado: ${device.name || 'Anonymous'} (${device.id}) - RSSI: ${device.rssi}`)
+          // Log Model ID from FE2C service data (Fast Pair)
+          if (device.serviceData) {
+            const fe2cData = (device.serviceData as any)?.['0000fe2c-0000-1000-8000-00805f9b34fb']
+            if (fe2cData) {
+              console.log(`🏷️ [Fast Pair] Model ID service data: ${fe2cData} (device: ${device.name || device.id})`)
+            }
+          }
           onDeviceFound({
             id: device.id,
             name: device.name || 'Anonymous',

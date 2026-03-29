@@ -8,7 +8,7 @@ import { useBluetooth } from '@/context/BluetoothContext'
 import { useTools } from '@/context/ToolsContext'
 import { useTags } from '@/context/TagsContext'
 import { useAuth } from '@/context/AuthContext'
-import { provisionTracker, ringTracker } from '@/modules/expo-fmdn/src'
+import { bondDevice } from '@/modules/expo-fmdn/src'
 
 // UUIDs conhecidos para referência
 const KNOWN_UUIDS: Record<string, string> = {
@@ -245,14 +245,21 @@ export default function AirTagScreen() {
       const bleTagId = stableTagId(sheet)
       console.log(`[Pair] tag_id: ${bleTagId}`)
 
-      // 1. Provisionar EIK via react-native-ble-plx (com refreshGatt — FE2C acessível)
+      // 1. Bond com o device no nível Android (habilita write-with-response)
       let eik: string | null = null
       try {
-        console.log('[Pair] Provisionando EIK via BLE-PLX...')
+        console.log('[Pair] Bonding device...')
+        const bonded = await bondDevice(sheet.id)
+        console.log(`[Pair] Bond: ${bonded ? 'OK' : 'failed'}`)
+        // Aguarda estabilizar após bond
+        await new Promise(r => setTimeout(r, 1000))
+
+        // 2. Provisionar EIK via BLE-PLX (agora com bond — write-with-response deve funcionar)
+        console.log('[Pair] Provisionando EIK...')
         eik = await provisionEIK(sheet.id)
         console.log(`[Pair] EIK: ${eik ? eik.slice(0, 10) + '...' : 'null'}`)
       } catch (e) {
-        console.warn('[Pair] EIK provisioning failed:', (e as Error)?.message)
+        console.warn('[Pair] Provisioning failed:', (e as Error)?.message)
       }
 
       // 2. Cria/atualiza o registro na tabela tags
