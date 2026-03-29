@@ -68,7 +68,7 @@ export default function DashboardScreen() {
       >
         <View>
           <Text style={{ fontSize: 28, fontWeight: 'bold' }}>
-            🔨 Tool Tracker
+            🔨 Locate Tool
           </Text>
           <Text style={{ fontSize: 14, color: '#666', marginTop: 4 }}>
             {contractor?.company?.toUpperCase() || 'Admin'}
@@ -243,88 +243,6 @@ export default function DashboardScreen() {
         </View>
       )}
 
-      {/* Recent Tools */}
-      {!loading && tools.length > 0 && (
-        <View style={{ marginBottom: 20 }}>
-          <Text style={{ fontSize: 16, fontWeight: '600', marginBottom: 12 }}>
-            Ferramentas Recentes
-          </Text>
-
-          {tools.slice(0, 3).map(tool => (
-            <View
-              key={tool.id}
-              style={{
-                backgroundColor: '#fff',
-                borderRadius: 8,
-                padding: 12,
-                marginBottom: 8,
-                flexDirection: 'row',
-                justifyContent: 'space-between',
-                alignItems: 'center',
-              }}
-            >
-              <View style={{ flex: 1 }}>
-                <Text style={{ fontWeight: '600', fontSize: 14 }}>
-                  {tool.name}
-                </Text>
-                <Text style={{ color: '#666', fontSize: 12, marginTop: 2 }}>
-                  {tool.type}
-                </Text>
-              </View>
-
-              <View style={{ alignItems: 'flex-end' }}>
-                <View
-                  style={{
-                    paddingHorizontal: 8,
-                    paddingVertical: 4,
-                    borderRadius: 4,
-                    backgroundColor: !!tool.assigned_tag ? '#d1fae5' : '#fee2e2',
-                    marginBottom: 4,
-                  }}
-                >
-                  <Text
-                    style={{
-                      color: !!tool.assigned_tag ? '#065f46' : '#991b1b',
-                      fontSize: 11,
-                      fontWeight: '600',
-                    }}
-                  >
-                    {!!tool.assigned_tag ? '🟢 Conectada' : '🔴 Desconectada'}
-                  </Text>
-                </View>
-
-                {tool.battery && (
-                  <Text
-                    style={{
-                      color: tool.battery < 20 ? '#991b1b' : '#666',
-                      fontSize: 11,
-                    }}
-                  >
-                    🔋 {tool.battery}%
-                  </Text>
-                )}
-              </View>
-            </View>
-          ))}
-
-          {tools.length > 3 && (
-            <TouchableOpacity
-              onPress={() => router.push('/(tabs)/tools')}
-              style={{
-                paddingVertical: 12,
-                paddingHorizontal: 16,
-                borderRadius: 8,
-                backgroundColor: '#eff6ff',
-                alignItems: 'center',
-              }}
-            >
-              <Text style={{ color: '#2563eb', fontWeight: '600', fontSize: 13 }}>
-                Ver todas as {tools.length} ferramentas →
-              </Text>
-            </TouchableOpacity>
-          )}
-        </View>
-      )}
 
       {/* Empty State */}
       {!loading && tools.length === 0 && (

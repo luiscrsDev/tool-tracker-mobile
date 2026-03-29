@@ -4,323 +4,210 @@ import {
   Text,
   ScrollView,
   TouchableOpacity,
-  Alert,
   Linking,
-  ActivityIndicator,
+  RefreshControl,
 } from 'react-native'
 import { Ionicons } from '@expo/vector-icons'
 import { useFocusEffect } from '@react-navigation/native'
 import { useTools } from '@/context/ToolsContext'
 import { useTags } from '@/context/TagsContext'
+import { useSites } from '@/context/SitesContext'
 import { useLocation } from '@/context/LocationContext'
 import { useAuth } from '@/context/AuthContext'
-import { useBluetooth } from '@/context/BluetoothContext'
-import { LocationService } from '@/lib/location'
 
 export default function TrackingScreen() {
   const { tools, refreshTools } = useTools()
-  const { getTagById } = useTags()
-  const { trackedTools, startTracking, stopTracking, loadLastKnownLocations, getToolLastLocation } = useLocation()
+  const { tags, getTagById, refreshTags } = useTags()
+  const { resolveLocation, refreshSites } = useSites()
+  const { allToolLocations, loadLastKnownLocations } = useLocation()
   const { contractor } = useAuth()
-  const { playTuyaSound } = useBluetooth()
-  const [loading, setLoading] = useState(false)
-  const [beepingId, setBeepingId] = useState<string | null>(null)
+  const [refreshing, setRefreshing] = useState(false)
 
-  // Atualiza ferramentas sempre que a aba recebe foco (garante tag_id atualizado)
+  // Refresh on focus
   useFocusEffect(
     useCallback(() => {
       if (contractor?.id) {
         refreshTools(contractor.id)
+        refreshTags(contractor.id)
+        refreshSites(contractor.id)
       }
     }, [contractor?.id]),
   )
 
-  // Load last known locations when screen opens or tools change
-  useEffect(() => {
-    if (tools.length > 0) {
-      console.log(`📍 Loading last locations for ${tools.length} tools`)
-      loadLastKnownLocations(tools.map(t => t.id))
-    }
-  }, [tools, loadLastKnownLocations])
+  // Load locations
+  const trackedTools = tools.filter(t => t.assigned_tag)
 
-  // Refresh BLE tool locations from Supabase every 30s
   useEffect(() => {
-    if (tools.length === 0) return
+    if (trackedTools.length > 0) {
+      loadLastKnownLocations(trackedTools.map(t => t.id))
+    }
+  }, [trackedTools.length, loadLastKnownLocations])
+
+  // Refresh every 30s
+  useEffect(() => {
+    if (trackedTools.length === 0) return
     const interval = setInterval(() => {
-      loadLastKnownLocations(tools.map(t => t.id))
+      loadLastKnownLocations(trackedTools.map(t => t.id))
     }, 30000)
     return () => clearInterval(interval)
-  }, [tools, loadLastKnownLocations])
+  }, [trackedTools.length, loadLastKnownLocations])
 
-  const handleStartTracking = async (toolId: string, toolName: string) => {
-    try {
-      setLoading(true)
-      console.log(`🔍 Starting tracking for: ${toolName}`)
-      const tool = tools.find(t => t.id === toolId)
-      const tag = tool?.assigned_tag ? getTagById(tool.assigned_tag) : null
-      await startTracking(toolId, toolName, contractor?.id || '', tag?.tag_id || undefined)
-      Alert.alert('Sucesso', `Rastreamento iniciado para ${toolName}`)
-    } catch (err) {
-      const errorMsg = err instanceof Error ? err.message : 'Erro desconhecido'
-      console.error(`❌ Tracking error for ${toolName}:`, errorMsg)
-      Alert.alert('Erro ao Rastrear', errorMsg || 'Falha ao iniciar rastreamento. Verifique as permissões de localização.')
-    } finally {
-      setLoading(false)
-    }
+  const handleRefresh = async () => {
+    if (!contractor?.id) return
+    setRefreshing(true)
+    await refreshTools(contractor.id)
+    await loadLastKnownLocations(trackedTools.map(t => t.id))
+    setRefreshing(false)
   }
 
-  const handleStopTracking = async (toolId: string, toolName: string) => {
-    Alert.alert(
-      'Parar Rastreamento?',
-      `Deseja parar de rastrear ${toolName}?`,
-      [
-        { text: 'Cancelar', style: 'cancel' },
-        {
-          text: 'Parar',
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              await stopTracking(toolId)
-              Alert.alert('Sucesso', 'Rastreamento parado')
-            } catch {
-              Alert.alert('Erro', 'Falha ao parar rastreamento')
-            }
-          },
-        },
-      ],
-    )
+  const timeAgo = (timestamp?: string) => {
+    if (!timestamp) return null
+    const diff = Date.now() - new Date(timestamp).getTime()
+    const mins = Math.floor(diff / 60000)
+    if (mins < 1) return 'Agora'
+    if (mins < 60) return `Há ${mins} min`
+    const hours = Math.floor(mins / 60)
+    if (hours < 24) return `Há ${hours}h`
+    const days = Math.floor(hours / 24)
+    return `Há ${days}d`
   }
 
-  const handleOpenMap = (toolId: string) => {
-    const tool = trackedTools.find(t => t.id === toolId)
-    if (tool?.location) {
-      const url = LocationService.getLocationUrl(tool.location.latitude, tool.location.longitude)
-      Linking.openURL(url)
-    }
-  }
-
-  const renderToolCard = (tool: any) => {
-    const tracked = trackedTools.find(t => t.id === tool.id)
-    const lastLocation = tracked?.location || getToolLastLocation(tool.id)
+  const renderToolCard = (tool: typeof tools[0]) => {
+    const tag = tool.assigned_tag ? getTagById(tool.assigned_tag) : null
+    const location = allToolLocations.get(tool.id) || tool.last_seen_location
+    const locationLabel = location
+      ? resolveLocation(location.latitude, location.longitude)
+      : null
+    const lastSeen = timeAgo(location?.timestamp)
+    const battery = tag?.battery
 
     return (
       <View
         key={tool.id}
         style={{
-          backgroundColor: '#fff',
-          borderRadius: 8,
+          backgroundColor: 'white',
+          borderRadius: 12,
           padding: 16,
-          marginBottom: 12,
-          borderLeftWidth: 4,
-          borderLeftColor: tracked ? '#10b981' : lastLocation ? '#3b82f6' : '#ccc',
+          marginBottom: 10,
+          shadowColor: '#000',
+          shadowOpacity: 0.05,
+          shadowRadius: 6,
+          elevation: 1,
         }}
       >
-        <View
-          style={{
-            flexDirection: 'row',
-            justifyContent: 'space-between',
-            alignItems: 'flex-start',
-            marginBottom: 12,
-          }}
-        >
+        {/* Header */}
+        <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 12 }}>
           <View style={{ flex: 1 }}>
-            <Text style={{ fontSize: 16, fontWeight: '600', marginBottom: 4 }}>
+            <Text style={{ fontSize: 16, fontWeight: '700', color: '#0F172A' }}>
               {tool.name}
             </Text>
-            <Text style={{ color: '#666', fontSize: 13 }}>{tool.type}</Text>
-          </View>
-          <View
-            style={{
-              paddingHorizontal: 8,
-              paddingVertical: 4,
-              borderRadius: 4,
-              backgroundColor: tracked ? '#d1fae5' : lastLocation ? '#dbeafe' : '#f3f4f6',
-            }}
-          >
-            <Text
-              style={{
-                color: tracked ? '#065f46' : lastLocation ? '#1e40af' : '#6b7280',
-                fontSize: 11,
-                fontWeight: '600',
-              }}
-            >
-              {tracked ? '🟢 Rastreando' : lastLocation ? '🔵 Última Posição' : '⚪ Inativo'}
+            <Text style={{ fontSize: 12, color: '#94A3B8', marginTop: 2 }}>
+              {tool.type} {tag ? `· ${tag.name}` : ''}
             </Text>
           </View>
+          {battery != null && (
+            <View style={{
+              flexDirection: 'row', alignItems: 'center', gap: 4,
+              paddingHorizontal: 8, paddingVertical: 4, borderRadius: 12,
+              backgroundColor: battery < 20 ? '#FEF2F2' : battery < 50 ? '#FFFBEB' : '#F0FDF4',
+            }}>
+              <Ionicons
+                name="battery-half"
+                size={14}
+                color={battery < 20 ? '#EF4444' : battery < 50 ? '#F59E0B' : '#10B981'}
+              />
+              <Text style={{
+                fontSize: 11, fontWeight: '700',
+                color: battery < 20 ? '#EF4444' : battery < 50 ? '#F59E0B' : '#10B981',
+              }}>
+                {battery}%
+              </Text>
+            </View>
+          )}
         </View>
 
-        {lastLocation && (
-          <View
+        {/* Location */}
+        {location ? (
+          <TouchableOpacity
+            onPress={() => Linking.openURL(
+              `https://www.google.com/maps?q=${location.latitude},${location.longitude}`
+            )}
             style={{
-              backgroundColor: tracked ? '#f0fdf4' : '#f0f9ff',
-              paddingHorizontal: 12,
-              paddingVertical: 10,
-              borderRadius: 6,
-              marginBottom: 12,
+              backgroundColor: '#F0F9FF',
+              borderRadius: 8,
+              padding: 10,
+              borderWidth: 1,
+              borderColor: '#BFDBFE',
             }}
           >
-            <Text style={{ fontSize: 12, color: tracked ? '#065f46' : '#1e40af', marginBottom: 4 }}>
-              📍 {LocationService.formatLocation(lastLocation)}
-            </Text>
-            <Text style={{ fontSize: 11, color: tracked ? '#16a34a' : '#1e40af' }}>
-              Precisão: {lastLocation.accuracy.toFixed(1)}m
-            </Text>
-            {lastLocation.speed !== null && (
-              <Text style={{ fontSize: 11, color: tracked ? '#16a34a' : '#1e40af', marginTop: 2 }}>
-                Velocidade: {(lastLocation.speed * 3.6).toFixed(1)} km/h
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+              <Ionicons name="location" size={16} color="#2563EB" />
+              <Text style={{ fontSize: 13, fontWeight: '600', color: '#1E40AF', flex: 1 }}>
+                {locationLabel}
+              </Text>
+              <Ionicons name="open-outline" size={14} color="#93C5FD" />
+            </View>
+            {lastSeen && (
+              <Text style={{ fontSize: 11, color: '#93C5FD', marginTop: 4, marginLeft: 22 }}>
+                {lastSeen}
               </Text>
             )}
-            <Text
-              style={{ fontSize: 10, color: '#6b7280', marginTop: 4 }}>
-              Atualizado em: {new Date(lastLocation.timestamp).toLocaleTimeString('pt-BR')}
-            </Text>
+          </TouchableOpacity>
+        ) : (
+          <View style={{
+            backgroundColor: '#F8FAFC',
+            borderRadius: 8,
+            padding: 10,
+            borderWidth: 1,
+            borderColor: '#E2E8F0',
+          }}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+              <Ionicons name="location-outline" size={16} color="#CBD5E1" />
+              <Text style={{ fontSize: 13, color: '#CBD5E1' }}>
+                Sem localização registrada
+              </Text>
+            </View>
           </View>
         )}
-
-        <View style={{ flexDirection: 'row', gap: 8 }}>
-          {!tracked ? (
-            <TouchableOpacity
-              onPress={() => handleStartTracking(tool.id, tool.name)}
-              disabled={loading}
-              style={{
-                flex: 1,
-                paddingVertical: 10,
-                borderRadius: 6,
-                backgroundColor: '#10b981',
-                alignItems: 'center',
-              }}
-            >
-              <Text style={{ color: '#fff', fontWeight: '600', fontSize: 12 }}>
-                Rastrear
-              </Text>
-            </TouchableOpacity>
-          ) : (
-            <>
-              <TouchableOpacity
-                onPress={() => handleOpenMap(tool.id)}
-                style={{
-                  flex: 1,
-                  paddingVertical: 10,
-                  borderRadius: 6,
-                  borderWidth: 1,
-                  borderColor: '#10b981',
-                  alignItems: 'center',
-                }}
-              >
-                <Text style={{ color: '#10b981', fontWeight: '600', fontSize: 12 }}>
-                  Ver Mapa
-                </Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                onPress={() => handleStopTracking(tool.id, tool.name)}
-                style={{
-                  flex: 1,
-                  paddingVertical: 10,
-                  borderRadius: 6,
-                  backgroundColor: '#ef4444',
-                  alignItems: 'center',
-                }}
-              >
-                <Text style={{ color: '#fff', fontWeight: '600', fontSize: 12 }}>
-                  Parar
-                </Text>
-              </TouchableOpacity>
-            </>
-          )}
-
-          {/* Beep — só aparece para ferramentas com tag BLE pareado */}
-          {(() => {
-            const toolTag = tool.assigned_tag ? getTagById(tool.assigned_tag) : null
-            if (!toolTag) return null
-            const bleId = toolTag.tag_id
-            return (
-              <TouchableOpacity
-                onPress={async () => {
-                  setBeepingId(bleId)
-                  await playTuyaSound(bleId)
-                  setBeepingId(null)
-                }}
-                disabled={beepingId === bleId}
-                style={{
-                  width: 42,
-                  paddingVertical: 10,
-                  borderRadius: 6,
-                  borderWidth: 1,
-                  borderColor: beepingId === bleId ? '#f59e0b' : '#d1d5db',
-                  backgroundColor: beepingId === bleId ? '#fef3c7' : 'transparent',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                }}
-              >
-                {beepingId === bleId
-                  ? <ActivityIndicator size="small" color="#f59e0b" />
-                  : <Ionicons name="volume-high" size={18} color="#6b7280" />
-                }
-              </TouchableOpacity>
-            )
-          })()}
-        </View>
       </View>
     )
   }
 
   return (
-    <View style={{ flex: 1, backgroundColor: '#f5f5f5' }}>
+    <View style={{ flex: 1, backgroundColor: '#F8FAFC' }}>
       {/* Header */}
-      <View
-        style={{
-          backgroundColor: '#fff',
-          paddingHorizontal: 16,
-          paddingVertical: 16,
-          borderBottomWidth: 1,
-          borderBottomColor: '#eee',
-        }}
-      >
-        <Text style={{ fontSize: 24, fontWeight: 'bold' }}>📍 Rastreamento</Text>
-        <Text style={{ color: '#666', fontSize: 13, marginTop: 4 }}>
+      <View style={{
+        backgroundColor: '#0F172A',
+        paddingHorizontal: 20,
+        paddingTop: 56,
+        paddingBottom: 20,
+      }}>
+        <Text style={{ fontSize: 22, fontWeight: '800', color: 'white', letterSpacing: -0.5 }}>
+          Rastreamento
+        </Text>
+        <Text style={{ fontSize: 12, color: 'rgba(255,255,255,0.4)', marginTop: 4 }}>
           {trackedTools.length === 0
-            ? 'Selecione uma ferramenta para começar'
-            : `${trackedTools.length} ferramenta${trackedTools.length !== 1 ? 's' : ''} em rastreamento`}
+            ? 'Vincule tags às ferramentas para rastrear'
+            : `${trackedTools.length} ferramenta${trackedTools.length !== 1 ? 's' : ''} rastreada${trackedTools.length !== 1 ? 's' : ''}`}
         </Text>
       </View>
 
-      {/* Content */}
-      {tools.length === 0 ? (
-        <View
-          style={{
-            flex: 1,
-            justifyContent: 'center',
-            alignItems: 'center',
-            paddingHorizontal: 32,
-          }}
-        >
-          <Text style={{ fontSize: 40, marginBottom: 16 }}>🔨</Text>
-          <Text style={{ fontSize: 16, fontWeight: '600', color: '#333', marginBottom: 8 }}>
-            Nenhuma ferramenta cadastrada
+      {trackedTools.length === 0 ? (
+        <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', padding: 32 }}>
+          <Ionicons name="location-outline" size={64} color="#CBD5E1" />
+          <Text style={{ fontSize: 16, fontWeight: '600', color: '#64748B', marginTop: 16 }}>
+            Nenhuma ferramenta rastreada
           </Text>
-          <Text style={{ color: '#666', fontSize: 13, textAlign: 'center', lineHeight: 20 }}>
-            Cadastre ferramentas primeiro para começar a rastrear
+          <Text style={{ fontSize: 13, color: '#94A3B8', textAlign: 'center', marginTop: 8, lineHeight: 20 }}>
+            Vincule tags Bluetooth às ferramentas na aba AirTag Setup para começar a rastrear
           </Text>
         </View>
       ) : (
-        <ScrollView contentContainerStyle={{ paddingHorizontal: 16, paddingVertical: 16 }}>
-          {tools.map(tool => renderToolCard(tool))}
-
-          {trackedTools.length > 0 && (
-            <View
-              style={{
-                backgroundColor: '#dbeafe',
-                paddingHorizontal: 12,
-                paddingVertical: 10,
-                borderRadius: 8,
-                marginTop: 12,
-              }}
-            >
-              <Text style={{ fontSize: 12, color: '#1e40af', fontWeight: '600' }}>
-                ℹ️ Os dados de localização são atualizados a cada 5 metros de movimento
-              </Text>
-            </View>
-          )}
+        <ScrollView
+          contentContainerStyle={{ padding: 16 }}
+          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={handleRefresh} />}
+        >
+          {trackedTools.map(tool => renderToolCard(tool))}
         </ScrollView>
       )}
     </View>

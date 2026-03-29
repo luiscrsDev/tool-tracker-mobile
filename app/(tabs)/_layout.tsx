@@ -62,8 +62,9 @@ export default function TabLayout() {
       <Tabs.Screen name="locations" options={{ href: null, headerShown: false }} />
       <Tabs.Screen name="history" options={{ href: null, headerShown: false }} />
       <Tabs.Screen name="settings" options={{ href: null, headerShown: false }} />
-      <Tabs.Screen name="tool-form" options={{ href: null, headerShown: true }} />
+      <Tabs.Screen name="tool-form" options={{ href: null, headerShown: false }} />
       <Tabs.Screen name="tool-detail" options={{ href: null, headerShown: false }} />
+      <Tabs.Screen name="sites" options={{ href: null, headerShown: false }} />
     </Tabs>
   )
 }

@@ -14,6 +14,7 @@ import { AlertsProvider } from '@/context/AlertsContext'
 import { BluetoothProvider } from '@/context/BluetoothContext'
 import { LocationProvider } from '@/context/LocationContext'
 import { TagsProvider } from '@/context/TagsContext'
+import { SitesProvider } from '@/context/SitesContext'
 import { AdminProvider } from '@/context/AdminContext'
 
 function RootLayoutNav() {
@@ -66,6 +67,7 @@ export default function RootLayout() {
     <AuthProvider>
       <ToolsProvider>
         <TagsProvider>
+          <SitesProvider>
           <AlertsProvider>
             <BluetoothProvider>
               <LocationProvider>
@@ -75,6 +77,7 @@ export default function RootLayout() {
               </LocationProvider>
             </BluetoothProvider>
           </AlertsProvider>
+          </SitesProvider>
         </TagsProvider>
       </ToolsProvider>
     </AuthProvider>

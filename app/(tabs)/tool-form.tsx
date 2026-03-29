@@ -50,8 +50,8 @@ export default function ToolFormScreen() {
   const handleSave = async () => {
     if (!contractor?.id) return
 
-    if (!formData.name.trim() || !formData.type.trim() || !formData.value.trim()) {
-      Alert.alert('Validação', 'Preencha os campos obrigatórios: Nome, Tipo e Valor')
+    if (!formData.name.trim() || !formData.type.trim()) {
+      Alert.alert('Validação', 'Preencha os campos obrigatórios: Nome e Tipo')
       return
     }
 
@@ -61,20 +61,19 @@ export default function ToolFormScreen() {
         contractor_id: contractor.id,
         name: formData.name.trim(),
         type: formData.type.trim(),
-        value: parseFloat(formData.value),
+        value: formData.value ? parseFloat(formData.value) : 0,
         battery: formData.battery ? parseInt(formData.battery, 10) : null,
         status: formData.status,
       }
 
       if (isEditing && tool) {
         await updateTool(tool.id, data)
-        Alert.alert('Sucesso', 'Ferramenta atualizada com sucesso')
       } else {
         await addTool(data)
-        Alert.alert('Sucesso', 'Ferramenta adicionada com sucesso')
       }
 
-      router.back()
+      setFormData({ ...INITIAL_FORM })
+      router.replace('/(tabs)/tools')
     } catch (err) {
       Alert.alert('Erro', 'Falha ao salvar ferramenta')
       console.error(err)
@@ -139,7 +138,7 @@ export default function ToolFormScreen() {
         {/* Value */}
         <View style={{ marginBottom: 16 }}>
           <Text style={{ fontSize: 13, fontWeight: '600', color: '#666', marginBottom: 8 }}>
-            Valor (R$) *
+            Valor (R$)
           </Text>
           <TextInput
             style={{
@@ -150,25 +149,6 @@ export default function ToolFormScreen() {
             value={formData.value}
             onChangeText={text => setFormData({ ...formData, value: text })}
             keyboardType="decimal-pad"
-            editable={!loading}
-          />
-        </View>
-
-        {/* Battery */}
-        <View style={{ marginBottom: 16 }}>
-          <Text style={{ fontSize: 13, fontWeight: '600', color: '#666', marginBottom: 8 }}>
-            Bateria (%) - Opcional
-          </Text>
-          <TextInput
-            style={{
-              borderWidth: 1, borderColor: '#ddd', borderRadius: 8,
-              paddingHorizontal: 12, paddingVertical: 10, fontSize: 14, backgroundColor: '#fff',
-            }}
-            placeholder="0-100"
-            value={formData.battery}
-            onChangeText={text => setFormData({ ...formData, battery: text })}
-            keyboardType="number-pad"
-            maxLength={3}
             editable={!loading}
           />
         </View>
@@ -208,7 +188,7 @@ export default function ToolFormScreen() {
         {/* Buttons */}
         <View style={{ flexDirection: 'row', gap: 12 }}>
           <TouchableOpacity
-            onPress={() => router.back()}
+            onPress={() => router.replace('/(tabs)/tools')}
             style={{
               flex: 1, paddingVertical: 12, borderRadius: 8,
               borderWidth: 1, borderColor: '#ddd', alignItems: 'center',

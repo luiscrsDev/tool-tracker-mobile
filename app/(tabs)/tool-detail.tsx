@@ -123,7 +123,7 @@ export default function ToolDetailScreen() {
         paddingTop: 56,
         paddingBottom: 24,
       }}>
-        <TouchableOpacity onPress={() => router.back()} style={{ marginBottom: 16 }}>
+        <TouchableOpacity onPress={() => router.replace('/(tabs)/tools')} style={{ marginBottom: 16 }}>
           <Text style={{ color: '#2563EB', fontSize: 13, fontWeight: '600' }}>← Voltar</Text>
         </TouchableOpacity>
 
@@ -136,18 +136,24 @@ export default function ToolDetailScreen() {
               {tool.type?.replace('_', ' ').toUpperCase()}
             </Text>
           </View>
-          <View style={{
-            paddingHorizontal: 10, paddingVertical: 6, borderRadius: 20,
-            backgroundColor: isTracking ? 'rgba(16,185,129,0.15)' : 'rgba(255,255,255,0.08)',
-            borderWidth: 1, borderColor: isTracking ? 'rgba(16,185,129,0.3)' : 'rgba(255,255,255,0.1)',
-          }}>
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-              <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: isTracking ? '#10B981' : '#64748B' }} />
-              <Text style={{ fontSize: 10, color: isTracking ? '#10B981' : '#64748B', fontWeight: '700', letterSpacing: 0.5 }}>
-                {isTracking ? 'RASTREANDO' : 'INATIVO'}
-              </Text>
-            </View>
-          </View>
+          {(() => {
+            const statusLabel = tool.status === 'active' ? 'ATIVO' : tool.status === 'maintenance' ? 'MANUTENÇÃO' : 'INATIVO'
+            const isActive = tool.status === 'active'
+            return (
+              <View style={{
+                paddingHorizontal: 10, paddingVertical: 6, borderRadius: 20,
+                backgroundColor: isActive ? 'rgba(16,185,129,0.15)' : 'rgba(255,255,255,0.08)',
+                borderWidth: 1, borderColor: isActive ? 'rgba(16,185,129,0.3)' : 'rgba(255,255,255,0.1)',
+              }}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                  <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: isActive ? '#10B981' : '#64748B' }} />
+                  <Text style={{ fontSize: 10, color: isActive ? '#10B981' : '#64748B', fontWeight: '700', letterSpacing: 0.5 }}>
+                    {statusLabel}
+                  </Text>
+                </View>
+              </View>
+            )
+          })()}
         </View>
       </View>
 
@@ -190,7 +196,7 @@ export default function ToolDetailScreen() {
               <Text style={{ fontSize: 11, fontWeight: '700', color: '#94A3B8', letterSpacing: 0.5, marginBottom: 8 }}>
                 TAG BLUETOOTH
               </Text>
-              {isConnected && tag ? (
+              {isConnected ? (
                 <View style={{
                   flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
                   backgroundColor: '#F0FDF4', borderRadius: 8, padding: 10,
@@ -199,7 +205,7 @@ export default function ToolDetailScreen() {
                   <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flex: 1 }}>
                     <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: '#10B981' }} />
                     <Text style={{ fontSize: 13, fontWeight: '600', color: '#065F46' }}>
-                      {tag.name}
+                      {tag?.name || 'Tag vinculado'}
                     </Text>
                   </View>
                   <TouchableOpacity
@@ -211,15 +217,6 @@ export default function ToolDetailScreen() {
                   >
                     <Text style={{ fontSize: 11, color: '#EF4444', fontWeight: '700' }}>Desvincular</Text>
                   </TouchableOpacity>
-                </View>
-              ) : isConnected ? (
-                <View style={{
-                  flexDirection: 'row', alignItems: 'center', gap: 8,
-                  backgroundColor: '#F0FDF4', borderRadius: 8, padding: 10,
-                  borderWidth: 1, borderColor: '#BBF7D0',
-                }}>
-                  <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: '#10B981' }} />
-                  <Text style={{ fontSize: 13, fontWeight: '600', color: '#065F46' }}>Tag vinculado</Text>
                 </View>
               ) : (
                 <Text style={{ fontSize: 13, color: '#CBD5E1' }}>Sem tracker vinculado</Text>

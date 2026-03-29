@@ -36,6 +36,17 @@ export interface Tool {
   }
 }
 
+export interface Site {
+  id: string
+  contractor_id: string
+  label: string
+  latitude: number
+  longitude: number
+  radius_m: number
+  address?: string | null
+  created_at: string
+}
+
 export interface BLEDevice {
   id: string
   name: string

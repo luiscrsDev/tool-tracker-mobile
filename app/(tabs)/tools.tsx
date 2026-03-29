@@ -62,67 +62,31 @@ export default function ToolsScreen() {
       style={{
         backgroundColor: '#fff',
         borderRadius: 8,
-        padding: 16,
-        marginBottom: 12,
-        borderLeftWidth: 4,
+        paddingHorizontal: 14,
+        paddingVertical: 10,
+        marginBottom: 8,
+        borderLeftWidth: 3,
         borderLeftColor: !!tool.assigned_tag ? '#10b981' : '#ef4444',
       }}
       onPress={() => router.push(`/(tabs)/tool-detail?toolId=${tool.id}`)}
     >
-      <View style={{ marginBottom: 8 }}>
-        <Text style={{ fontSize: 16, fontWeight: '600', marginBottom: 4 }}>
-          {tool.name}
-        </Text>
-        <Text style={{ color: '#666', fontSize: 13 }}>
-          {tool.type}
-        </Text>
-      </View>
-
-      <View
-        style={{
-          flexDirection: 'row',
-          justifyContent: 'space-between',
-          alignItems: 'center',
-          marginTop: 12,
-          paddingTop: 12,
-          borderTopWidth: 1,
-          borderTopColor: '#eee',
-        }}
-      >
-        <View style={{ flex: 1 }}>
-          <View
-            style={{
-              paddingHorizontal: 8,
-              paddingVertical: 6,
-              borderRadius: 4,
-              backgroundColor: !!tool.assigned_tag ? '#d1fae5' : '#fee2e2',
-              alignSelf: 'flex-start',
-            }}
-          >
-            <Text
-              style={{
-                color: !!tool.assigned_tag ? '#065f46' : '#991b1b',
-                fontSize: 11,
-                fontWeight: '600',
-              }}
-            >
-              {!!tool.assigned_tag ? '🟢 Conectada' : '🔴 Desconectada'}
-            </Text>
-          </View>
+      <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+        <Text style={{ fontSize: 15, fontWeight: '600', flex: 1 }}>{tool.name}</Text>
+        <View style={{
+          paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4,
+          backgroundColor: !!tool.assigned_tag ? '#d1fae5' : '#fee2e2',
+        }}>
+          <Text style={{ color: !!tool.assigned_tag ? '#065f46' : '#991b1b', fontSize: 10, fontWeight: '600' }}>
+            {!!tool.assigned_tag ? '🟢' : '🔴'}
+          </Text>
         </View>
-
-        {tool.battery !== null && (
-          <View style={{ alignItems: 'flex-end' }}>
-            <Text
-              style={{
-                color: tool.battery < 20 ? '#991b1b' : '#666',
-                fontSize: 13,
-                fontWeight: '600',
-              }}
-            >
-              🔋 {tool.battery}%
-            </Text>
-          </View>
+      </View>
+      <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 2 }}>
+        <Text style={{ color: '#666', fontSize: 12 }}>{tool.type}</Text>
+        {tool.battery != null && (
+          <Text style={{ color: tool.battery < 20 ? '#991b1b' : '#94A3B8', fontSize: 11 }}>
+            🔋 {tool.battery}%
+          </Text>
         )}
       </View>
     </TouchableOpacity>
