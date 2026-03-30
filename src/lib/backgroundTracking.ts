@@ -110,8 +110,10 @@ export async function startBackgroundTracking(): Promise<boolean> {
     }
 
     // Start background location with foreground service
-    const isRunning = await Location.hasStartedLocationUpdatesAsync(BACKGROUND_LOCATION_TASK)
+    const isRunning = await Location.hasStartedLocationUpdatesAsync(BACKGROUND_LOCATION_TASK).catch(() => false)
+    console.log(`[BG] Location task already running: ${isRunning}`)
     if (!isRunning) {
+      console.log('[BG] Starting location updates...')
       await Location.startLocationUpdatesAsync(BACKGROUND_LOCATION_TASK, {
         accuracy: Location.Accuracy.Balanced,
         timeInterval: 2 * 60 * 1000,  // every 2 min
@@ -135,7 +137,7 @@ export async function startBackgroundTracking(): Promise<boolean> {
 
     return true
   } catch (err) {
-    console.error('[BG] ❌ Failed to start:', err)
+    console.error('[BG] ❌ Failed to start:', (err as Error)?.message ?? err)
     return false
   }
 }

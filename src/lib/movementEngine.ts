@@ -104,7 +104,7 @@ async function saveMovement(
     site_id: siteId,
   })
 
-  if (error) console.warn(`[Movement] Save error: ${error.message}`)
+  if (error) { console.warn(`[Movement] Save skipped: ${error.message}`); return }
   else console.log(`[Movement] ${event} → ${toolId.slice(0, 8)} (${lat.toFixed(4)}, ${lng.toFixed(4)}) ${speedKmh ? speedKmh.toFixed(0) + 'km/h' : ''}`)
 
   lastRecords.set(toolId, { latitude: lat, longitude: lng, event, timestamp: Date.now(), toolId })
