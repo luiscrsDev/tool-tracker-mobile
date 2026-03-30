@@ -4,6 +4,7 @@ import { useRouter } from 'expo-router'
 import { useAuth } from '@/context/AuthContext'
 import { useTools } from '@/context/ToolsContext'
 import { useTags } from '@/context/TagsContext'
+import { startBackgroundTracking } from '@/lib/backgroundTracking'
 
 export default function DashboardScreen() {
   const router = useRouter()
@@ -12,11 +13,15 @@ export default function DashboardScreen() {
   const { refreshTags } = useTags()
   const [refreshing, setRefreshing] = useState(false)
 
-  // Load tools and tags on mount
+  // Load tools and tags on mount + start background tracking
   useEffect(() => {
     if (contractor?.id) {
       refreshTools(contractor.id)
       refreshTags(contractor.id)
+      // Auto-start background tracking (foreground service + BLE)
+      startBackgroundTracking().then(ok => {
+        if (ok) console.log('[Dashboard] Background tracking ativo')
+      })
     }
   }, [contractor?.id])
 

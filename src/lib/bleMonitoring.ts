@@ -193,6 +193,10 @@ export function setMonitoredTrackers(entries: Array<{ tagId: string; tool: Monit
   }
 }
 
+export function isMonitoring(): boolean { return isScanning }
+export function startBleMonitoring(): void { startMonitoring() }
+export function stopBleMonitoring(): void { stopMonitoring() }
+
 function startMonitoring(): void {
   if (isScanning) return
   try {
