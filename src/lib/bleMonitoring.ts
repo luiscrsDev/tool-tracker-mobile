@@ -11,6 +11,7 @@
 
 import { BleManager } from 'react-native-ble-plx'
 import * as Location from 'expo-location'
+import { processDetection } from './movementEngine'
 
 // Find Easy service UUID — usado para filtrar o scan no iOS background
 // (iOS só permite BLE em background com Service UUID específico)
@@ -103,6 +104,18 @@ async function saveDetection(tagId: string, tool: MonitoredTool): Promise<void> 
     lastSaved.set(tagId, Date.now())
     console.log(`[BLE Monitor] ✅ ${tool.toolName} (${tagId}) → ${latitude.toFixed(5)}, ${longitude.toFixed(5)}`)
     onDetectionCallback?.({ toolId: tool.toolId, latitude, longitude, accuracy: accuracy ?? null, timestamp })
+
+    // Smart movement tracking — aplica as 3 regras
+    const detectedToolIds = Array.from(monitoredTrackers.values()).map(t => t.toolId)
+    processDetection(
+      tool.toolId,
+      tool.contractorId,
+      latitude,
+      longitude,
+      speed,        // metros/segundo do GPS
+      null,         // siteId resolvido depois
+      detectedToolIds,
+    ).catch(err => console.warn('[Movement] processDetection error:', err))
   } catch (err) {
     console.error(`[BLE Monitor] ❌ Erro ao salvar ${tool.toolId}:`, err)
   }

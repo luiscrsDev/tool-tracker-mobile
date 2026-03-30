@@ -47,6 +47,31 @@ export interface Site {
   created_at: string
 }
 
+export interface ToolCheckout {
+  id: string
+  worker_id: string | null
+  contractor_id: string
+  tool_ids: string[]
+  site_id: string | null
+  checked_out_at: string
+  returned_at: string | null
+}
+
+export interface ToolMovement {
+  id: string
+  tool_id: string
+  contractor_id: string
+  checkout_id: string | null
+  event: 'movement' | 'stop' | 'speed' | 'checkout'
+  latitude: number
+  longitude: number
+  address: string | null
+  site_id: string | null
+  speed_kmh: number | null
+  detected_by: string | null
+  created_at: string
+}
+
 export interface BLEDevice {
   id: string
   name: string
