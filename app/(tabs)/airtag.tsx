@@ -290,7 +290,14 @@ export default function AirTagScreen() {
   // Ferramentas com tag vinculado
   const pairedTools = tools.filter(t => t.assigned_tag)
 
-  // Dispositivos encontrados no scan — filtrados (purge no BluetoothContext cuida dos stale)
+  // Scan index (só pra disponíveis)
+  const scannedById = new Map<string, typeof devices[0]>()
+  devices.forEach(d => {
+    scannedById.set(d.id, d)
+    if (d.manufacturerData) scannedById.set(d.manufacturerData, d)
+  })
+
+  // Dispositivos encontrados no scan — filtrados
   const pairedTagIds = registeredBleIds
   const unpairedDevices = (() => {
     const now = Date.now()
@@ -332,14 +339,6 @@ export default function AirTagScreen() {
     }
     return Array.from(byName.values()).slice(0, 5)
   })()
-
-  // Para cada ferramenta pareada, pega o sinal atual do scan (se estiver visível)
-  // Indexa por device.id E por manufacturerData para achar Apple devices com MAC rotativo
-  const scannedById = new Map<string, typeof devices[0]>()
-  devices.forEach(d => {
-    scannedById.set(d.id, d)
-    if (d.manufacturerData) scannedById.set(d.manufacturerData, d)
-  })
 
   return (
     <View style={{ flex: 1, backgroundColor: '#0F172A' }}>
@@ -400,20 +399,36 @@ export default function AirTagScreen() {
               TAGS REGISTRADAS
             </Text>
             {tags.map(tag => {
-              // Match por MAC ou por nome — exclui MACs já usados em DISPONÍVEIS
-              const usedMacs = new Set(unpairedDevices.map(d => d.id))
-              let scanned = scannedById.get(tag.tag_id)
-              if (!scanned) {
-                scanned = devices.find(d =>
-                  d.name?.toLowerCase() === tag.name.toLowerCase() && !usedMacs.has(d.id)
-                )
-              }
-              const fakeDevice: PairingDevice = {
-                id: `tag-${tag.id}`,
-                name: tag.name,
-                rssi: scanned?.rssi ?? -100,
-              }
-              return renderDeviceCard(fakeDevice, true, scanned != null)
+              const linkedTool = tools.find(t => t.assigned_tag === tag.id)
+              return (
+                <View
+                  key={`tag-${tag.id}`}
+                  style={{
+                    backgroundColor: 'rgba(16,185,129,0.07)',
+                    borderRadius: 14, padding: 16,
+                    borderWidth: 1, borderColor: 'rgba(16,185,129,0.3)',
+                    flexDirection: 'row', alignItems: 'center', gap: 14,
+                    marginBottom: 10,
+                  }}
+                >
+                  <View style={{
+                    width: 44, height: 44, borderRadius: 12,
+                    backgroundColor: 'rgba(16,185,129,0.15)',
+                    alignItems: 'center', justifyContent: 'center',
+                  }}>
+                    <Ionicons name="bluetooth" size={22} color="#10B981" />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={{ color: 'white', fontWeight: '700', fontSize: 15 }}>{tag.name}</Text>
+                    {linkedTool && (
+                      <Text style={{ color: '#10B981', fontSize: 11, marginTop: 2 }}>
+                        🔗 {linkedTool.name}
+                      </Text>
+                    )}
+                  </View>
+                  <Text style={{ color: '#10B981', fontSize: 10, fontWeight: '700' }}>PAREADO</Text>
+                </View>
+              )
             })}
           </>
         )}
