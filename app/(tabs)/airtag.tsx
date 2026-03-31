@@ -77,8 +77,9 @@ export default function AirTagScreen() {
   }, [scanning, stopScanning])
 
   const openSheet = (device: PairingDevice) => {
-    setSheet(device)
-    setTagName(device.name || '')
+    const name = (device.name && device.name !== 'Anonymous') ? device.name : 'Find Easy'
+    setSheet({ ...device, name })
+    setTagName(name)
     setSelectedToolId(null)
     setToolDropdownOpen(false)
     setStep('confirm')
@@ -86,28 +87,32 @@ export default function AirTagScreen() {
 
   const renderDeviceCard = (item: PairingDevice, isPaired: boolean, inRange = true) => {
     const signalBars = item.rssi > -60 ? 3 : item.rssi > -80 ? 2 : 1
-    const proximityLabel = item.rssi > -55 ? '📍 Muito próximo' : item.rssi > -70 ? '🔵 Próximo' : '🔘 Distante'
+    const isVeryClose = item.rssi > -30
+    const proximityLabel = isVeryClose ? '🟢 AQUI!' : item.rssi > -55 ? '📍 Muito próximo' : item.rssi > -70 ? '🔵 Próximo' : '🔘 Distante'
+    // Match tag por MAC, por nome, ou por ID prefixado (tag-xxx)
     const tagRecord = tags.find(t => t.tag_id === item.id)
+      || tags.find(t => item.id === `tag-${t.id}`)
+      || (isPaired ? tags.find(t => t.name.toLowerCase() === (item.name || '').toLowerCase()) : null)
     const linkedTool = tagRecord ? tools.find(t => t.assigned_tag === tagRecord.id) : null
     const displayName = (item.name && item.name !== 'Anonymous') ? item.name : 'Find Easy'
 
     return (
       <TouchableOpacity
-        key={item.id}
+        key={`${isPaired ? 'paired' : 'avail'}-${item.id}`}
         onPress={() => openSheet(item)}
         activeOpacity={0.8}
         style={{
-          backgroundColor: isPaired ? 'rgba(16,185,129,0.07)' : '#1E293B',
+          backgroundColor: isVeryClose ? 'rgba(16,185,129,0.15)' : isPaired ? 'rgba(16,185,129,0.07)' : '#1E293B',
           borderRadius: 14, padding: 16,
-          borderWidth: 1,
-          borderColor: isPaired ? 'rgba(16,185,129,0.3)' : 'rgba(255,255,255,0.07)',
+          borderWidth: isVeryClose ? 2 : 1,
+          borderColor: isVeryClose ? '#10B981' : isPaired ? 'rgba(16,185,129,0.3)' : 'rgba(255,255,255,0.07)',
           flexDirection: 'row', alignItems: 'center', gap: 14,
           marginBottom: 10,
         }}
       >
         <View style={{
           width: 44, height: 44, borderRadius: 12,
-          backgroundColor: isPaired ? 'rgba(16,185,129,0.15)' : 'rgba(37,99,235,0.15)',
+          backgroundColor: isVeryClose ? 'rgba(16,185,129,0.3)' : isPaired ? 'rgba(16,185,129,0.15)' : 'rgba(37,99,235,0.15)',
           alignItems: 'center', justifyContent: 'center',
         }}>
           <Ionicons name="bluetooth" size={22} color={isPaired ? '#10B981' : '#60A5FA'} />
@@ -287,19 +292,24 @@ export default function AirTagScreen() {
 
   // Dispositivos encontrados no scan — filtrados (purge no BluetoothContext cuida dos stale)
   const pairedTagIds = registeredBleIds
-  const now = Date.now()
-  const unpairedDevices = devices
-    .filter(d => {
-      // Só mostra vistos nos últimos 5s (1 MAC por tracker nesse intervalo)
+  const unpairedDevices = (() => {
+    const now = Date.now()
+    // Contar quantos tags registrados por nome (pra filtrar devices pareados com MAC rotado)
+    const registeredNameCounts = new Map<string, number>()
+    tags.forEach(t => {
+      const n = t.name.toLowerCase()
+      registeredNameCounts.set(n, (registeredNameCounts.get(n) || 0) + 1)
+    })
+    // Track quantos já foram "consumidos" pelo dedup por nome
+    const nameConsumed = new Map<string, number>()
+
+    const filtered = devices.filter(d => {
       if ((d as any)._lastSeen && (now - (d as any)._lastSeen) > 5000) return false
       const tagId = stableTagId(d)
       if (pairedTagIds.has(tagId) || pairedTagIds.has(d.id)) return false
-      // 1. Model ID P23 via Fast Pair service data (quando disponível)
       if ((d as any).isFastPairP23) return true
-      // 2. Nome contém "find" (ex: "Find Easy")
       const name = d.name?.toLowerCase() ?? ''
       if (name.includes('find') || name.includes('tag') || name.includes('tracker')) return true
-      // 3. Apple Find My SEM nome — só se tem manufacturer data curta (tracker, não iPhone)
       if ((!name || name === 'anonymous') && d.manufacturerData) {
         try {
           const b = Uint8Array.from(atob(d.manufacturerData), c => c.charCodeAt(0))
@@ -308,7 +318,20 @@ export default function AirTagScreen() {
       }
       return false
     })
-    .sort((a, b) => b.rssi - a.rssi)
+
+    // Dedup: por nome, pega o de RSSI mais forte entre os vistos nos últimos 2s
+    const superFresh = filtered.filter(d => (now - ((d as any)._lastSeen || 0)) < 2000)
+    const source = superFresh.length > 0 ? superFresh : filtered
+    const byName = new Map<string, typeof filtered[0]>()
+    for (const d of source) {
+      const key = (d.name || 'unknown').toLowerCase()
+      const existing = byName.get(key)
+      if (!existing || d.rssi > existing.rssi) {
+        byName.set(key, d)
+      }
+    }
+    return Array.from(byName.values()).slice(0, 5)
+  })()
 
   // Para cada ferramenta pareada, pega o sinal atual do scan (se estiver visível)
   // Indexa por device.id E por manufacturerData para achar Apple devices com MAC rotativo
@@ -377,9 +400,16 @@ export default function AirTagScreen() {
               TAGS REGISTRADAS
             </Text>
             {tags.map(tag => {
-              const scanned = scannedById.get(tag.tag_id)
+              // Match por MAC ou por nome — exclui MACs já usados em DISPONÍVEIS
+              const usedMacs = new Set(unpairedDevices.map(d => d.id))
+              let scanned = scannedById.get(tag.tag_id)
+              if (!scanned) {
+                scanned = devices.find(d =>
+                  d.name?.toLowerCase() === tag.name.toLowerCase() && !usedMacs.has(d.id)
+                )
+              }
               const fakeDevice: PairingDevice = {
-                id: tag.tag_id,
+                id: `tag-${tag.id}`,
                 name: tag.name,
                 rssi: scanned?.rssi ?? -100,
               }

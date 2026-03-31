@@ -5,12 +5,13 @@ import { useAuth } from '@/context/AuthContext'
 import { useTools } from '@/context/ToolsContext'
 import { useTags } from '@/context/TagsContext'
 import { startBackgroundTracking } from '@/lib/backgroundTracking'
+import { addTrackerToMonitor } from '@/lib/bleMonitoring'
 
 export default function DashboardScreen() {
   const router = useRouter()
   const { contractor, admin, signOut } = useAuth()
   const { tools, loading, refreshTools } = useTools()
-  const { refreshTags } = useTags()
+  const { tags, refreshTags, getTagById } = useTags()
   const [refreshing, setRefreshing] = useState(false)
 
   // Load tools and tags on mount + start background tracking
@@ -24,6 +25,24 @@ export default function DashboardScreen() {
       })
     }
   }, [contractor?.id])
+
+  // Auto-register tagged tools in BLE monitor
+  useEffect(() => {
+    if (tools.length === 0 || tags.length === 0) return
+    let count = 0
+    for (const tool of tools) {
+      if (!tool.assigned_tag) continue
+      const tag = getTagById(tool.assigned_tag)
+      if (!tag) continue
+      addTrackerToMonitor(tag.tag_id, {
+        toolId: tool.id,
+        toolName: tool.name,
+        contractorId: tool.contractor_id,
+      })
+      count++
+    }
+    if (count > 0) console.log(`[Dashboard] Auto-registered ${count} tagged tools for BLE monitoring`)
+  }, [tools, tags])
 
   const handleRefresh = async () => {
     if (!contractor?.id) return

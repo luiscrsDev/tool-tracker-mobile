@@ -29,6 +29,7 @@ export function BluetoothProvider({ children }: { children: React.ReactNode }) {
   const [connected, setConnected] = useState(false)
   const [error, setError] = useState<Error | null>(null)
   const [selectedDevice, setSelectedDevice] = useState<BluetoothDevice | null>(null)
+  const seenFindEasy = React.useRef(false)
 
   // Purge stale devices every 5s while scanning
   useEffect(() => {
@@ -36,7 +37,7 @@ export function BluetoothProvider({ children }: { children: React.ReactNode }) {
     const interval = setInterval(() => {
       setDevices(prev => {
         const now = Date.now()
-        return prev.filter(d => !((d as any)._lastSeen) || (now - (d as any)._lastSeen) < 6000)
+        return prev.filter(d => !((d as any)._lastSeen) || (now - (d as any)._lastSeen) < 4000)
       })
     }, 3000)
     return () => clearInterval(interval)
@@ -66,9 +67,12 @@ export function BluetoothProvider({ children }: { children: React.ReactNode }) {
               })
             }
 
-            // New MAC: if P23 (Fast Pair model ID) but no name, set "Find Easy"
-            if ((tagged as any).isFastPairP23 && (!tagged.name || tagged.name === 'Anonymous')) {
-              tagged.name = 'Find Easy'
+            // Marca se já vimos Find Easy na sessão
+            if (tagged.name?.includes('Find')) seenFindEasy.current = true
+
+            // New MAC sem nome: herda "Find Easy" se já vimos algum na sessão
+            if (!tagged.name || tagged.name === 'Anonymous') {
+              if (seenFindEasy.current || (tagged as any).isFastPairP23) tagged.name = 'Find Easy'
             }
 
             return [...prev, tagged]
