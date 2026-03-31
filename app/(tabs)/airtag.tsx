@@ -319,7 +319,7 @@ export default function AirTagScreen() {
       return false
     })
 
-    // Dedup: por nome, pega o de RSSI mais forte entre os vistos nos últimos 2s
+    // Dedup: 1 por nome, mais forte dos últimos 2s
     const superFresh = filtered.filter(d => (now - ((d as any)._lastSeen || 0)) < 2000)
     const source = superFresh.length > 0 ? superFresh : filtered
     const byName = new Map<string, typeof filtered[0]>()

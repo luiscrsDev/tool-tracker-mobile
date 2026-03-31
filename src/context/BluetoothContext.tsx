@@ -37,7 +37,7 @@ export function BluetoothProvider({ children }: { children: React.ReactNode }) {
     const interval = setInterval(() => {
       setDevices(prev => {
         const now = Date.now()
-        return prev.filter(d => !((d as any)._lastSeen) || (now - (d as any)._lastSeen) < 4000)
+        return prev.filter(d => !((d as any)._lastSeen) || (now - (d as any)._lastSeen) < 8000)
       })
     }, 3000)
     return () => clearInterval(interval)
