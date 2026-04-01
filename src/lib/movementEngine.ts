@@ -1,8 +1,9 @@
 import { supabase } from '@/lib/supabase'
+import AsyncStorage from '@react-native-async-storage/async-storage'
 import type { ToolMovement } from '@/types'
 
 // ── Config ──────────────────────────────────────────────────────────────
-const MIN_DISTANCE_M = 10       // distância mínima pra considerar movimento
+const MIN_DISTANCE_M = 15       // distância mínima pra considerar movimento (15m filtra GPS drift)
 const STOP_TIMEOUT_MS = 4 * 60 * 1000  // 4 minutos parado = registra stop
 const SPEED_THRESHOLD_KMH = 10  // acima = trânsito
 const SPEED_COOLDOWN_MS = 2 * 60 * 1000  // min 2min entre registros speed
@@ -17,11 +18,33 @@ interface LastRecord {
 }
 
 const lastRecords = new Map<string, LastRecord>()  // por tool_id
+const LAST_RECORDS_KEY = 'movement_last_records'
+let stateRestored = false
 let currentCheckoutId: string | null = null
 let checkoutToolIds: string[] = []
 let todayCheckoutDone = false
 let stopTimer: ReturnType<typeof setTimeout> | null = null
 let lastStopPosition: { lat: number; lng: number } | null = null
+
+// ── Persist/Restore state ───────────────────────────────────────────────
+async function persistLastRecords() {
+  const obj: Record<string, LastRecord> = {}
+  lastRecords.forEach((v, k) => { obj[k] = v })
+  await AsyncStorage.setItem(LAST_RECORDS_KEY, JSON.stringify(obj)).catch(() => {})
+}
+
+async function restoreLastRecords() {
+  if (stateRestored) return
+  stateRestored = true
+  try {
+    const raw = await AsyncStorage.getItem(LAST_RECORDS_KEY)
+    if (raw) {
+      const obj = JSON.parse(raw) as Record<string, LastRecord>
+      Object.entries(obj).forEach(([k, v]) => lastRecords.set(k, v))
+      console.log(`[Movement] Restored ${lastRecords.size} last records from storage`)
+    }
+  } catch { /* ignore */ }
+}
 
 // ── Haversine ───────────────────────────────────────────────────────────
 function distanceMeters(lat1: number, lon1: number, lat2: number, lon2: number): number {
@@ -108,6 +131,7 @@ async function saveMovement(
   else console.log(`[Movement] ${event} → ${toolId.slice(0, 8)} (${lat.toFixed(4)}, ${lng.toFixed(4)}) ${speedKmh ? speedKmh.toFixed(0) + 'km/h' : ''}`)
 
   lastRecords.set(toolId, { latitude: lat, longitude: lng, event, timestamp: Date.now(), toolId })
+  persistLastRecords()
 }
 
 // ── Process detection ───────────────────────────────────────────────────
@@ -124,9 +148,20 @@ export async function processDetection(
   siteId: string | null,
   detectedToolIds: string[],  // todos os tags detectáveis neste momento
 ) {
+  // Restaurar estado persistido (sobrevive reload)
+  await restoreLastRecords()
+
   const speedKmh = speedMs != null ? speedMs * 3.6 : 0
   const now = Date.now()
   const last = lastRecords.get(toolId)
+
+  // Primeira detecção: salvar posição mas NÃO gravar movimento (evita falso positivo)
+  if (!last) {
+    lastRecords.set(toolId, { latitude: lat, longitude: lng, event: 'detected', timestamp: now, toolId })
+    persistLastRecords()
+    console.log(`[Movement] First detection for ${toolId.slice(0, 8)} — position saved, no record`)
+    return
+  }
 
   const distFromLast = last
     ? distanceMeters(lat, lng, last.latitude, last.longitude)
