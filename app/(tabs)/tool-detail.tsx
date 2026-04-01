@@ -20,9 +20,8 @@ interface LocationRecord {
   id: string
   latitude: number
   longitude: number
-  accuracy: number
-  recorded_at: string
-  address?: string
+  event: string
+  created_at: string
 }
 
 export default function ToolDetailScreen() {
@@ -72,10 +71,10 @@ export default function ToolDetailScreen() {
     try {
       setLoadingHistory(true)
       const { data } = await supabase
-        .from('location_history')
-        .select('id, latitude, longitude, accuracy, recorded_at, address')
+        .from('tool_movements')
+        .select('id, latitude, longitude, event, created_at')
         .eq('tool_id', toolId)
-        .order('recorded_at', { ascending: false })
+        .order('created_at', { ascending: false })
         .limit(5)
       setRecentHistory(data || [])
     } catch (err) {
@@ -317,7 +316,7 @@ export default function ToolDetailScreen() {
                       {resolvedAddresses.get(record.id) || resolveLocation(record.latitude, record.longitude)}
                     </Text>
                     <Text style={{ fontSize: 10, color: '#CBD5E1', marginTop: 2 }}>
-                      {new Date(record.recorded_at).toLocaleString('pt-BR')}
+                      {new Date(record.created_at).toLocaleString('pt-BR')}
                     </Text>
                   </View>
                 </View>

@@ -316,7 +316,7 @@ export default function AirTagScreen() {
       if (pairedTagIds.has(tagId) || pairedTagIds.has(d.id)) return false
       if ((d as any).isFastPairP23) return true
       const name = d.name?.toLowerCase() ?? ''
-      if (name.includes('find') || name.includes('tag') || name.includes('tracker')) return true
+      if (name.includes('find') || name.includes('tag') || name.includes('tracker') || name.includes('ty') || name.includes('nut')) return true
       if ((!name || name === 'anonymous') && d.manufacturerData) {
         try {
           const b = Uint8Array.from(atob(d.manufacturerData), c => c.charCodeAt(0))

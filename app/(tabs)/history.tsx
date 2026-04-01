@@ -13,8 +13,8 @@ interface LocationRecord {
   tool_id: string
   latitude: number
   longitude: number
-  accuracy: number
-  recorded_at: string
+  event: string
+  created_at: string
 }
 
 export default function HistoryScreen() {
@@ -37,10 +37,10 @@ export default function HistoryScreen() {
     try {
       setLoading(true)
       const { data, error } = await supabase
-        .from('location_history')
-        .select('id, tool_id, latitude, longitude, accuracy, recorded_at')
+        .from('tool_movements')
+        .select('id, tool_id, latitude, longitude, event, created_at')
         .eq('tool_id', toolId)
-        .order('recorded_at', { ascending: false })
+        .order('created_at', { ascending: false })
         .limit(50)
 
       if (error) throw error
@@ -174,7 +174,7 @@ export default function HistoryScreen() {
                   <Ionicons name="open-outline" size={14} color="#93C5FD" />
                 </View>
                 <Text style={{ fontSize: 11, color: '#94A3B8' }}>
-                  {timeAgo(record.recorded_at)}
+                  {timeAgo(record.created_at)}
                 </Text>
               </TouchableOpacity>
             </View>
