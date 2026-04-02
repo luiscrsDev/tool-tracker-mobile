@@ -92,36 +92,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     console.log(`📱 OTP SMS sent to ${normalised}`)
   }
 
-  // Step 2: verify code and detect role
+  // Step 2: verify code via Twilio Verify and detect role
   const verifyOTP = async (phone: string, code: string) => {
     setError(null)
     const normalised = normalisePhone(phone)
 
-    // Fetch and validate OTP
-    const { data: otpRow, error: otpErr } = await supabase
-      .from('otp_codes')
-      .select('*')
-      .eq('phone', normalised)
-      .single()
+    // Verify via Twilio Verify (Edge Function)
+    const { data, error: verifyErr } = await supabase.functions.invoke('verify-otp', {
+      body: { phone: normalised, code: code.trim() },
+    })
 
-    if (otpErr || !otpRow) throw new Error('Código inválido ou expirado.')
-
-    if (new Date(otpRow.expires_at) < new Date()) {
-      await supabase.from('otp_codes').delete().eq('phone', normalised)
-      throw new Error('Código expirado. Solicite um novo.')
+    if (verifyErr || !data?.success) {
+      throw new Error('Código inválido ou expirado.')
     }
-
-    if (otpRow.code !== code.trim()) {
-      // Increment attempts
-      await supabase
-        .from('otp_codes')
-        .update({ attempts: otpRow.attempts + 1 })
-        .eq('phone', normalised)
-      throw new Error('Código incorreto.')
-    }
-
-    // Code valid — delete it
-    await supabase.from('otp_codes').delete().eq('phone', normalised)
 
     // Detect role by checking tables in priority order: master → contractor → worker
     const [masterResult, contractorResult, workerResult] = await Promise.all([

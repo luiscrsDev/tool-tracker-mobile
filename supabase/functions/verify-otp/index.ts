@@ -13,17 +13,17 @@ serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders })
 
   try {
-    const { phone } = await req.json()
-    if (!phone) return new Response(JSON.stringify({ error: 'Phone required' }), { status: 400, headers: corsHeaders })
+    const { phone, code } = await req.json()
+    if (!phone || !code) return new Response(JSON.stringify({ error: 'Phone and code required' }), { status: 400, headers: corsHeaders })
 
-    // Send verification via Twilio Verify
+    // Verify code via Twilio Verify
     const body = new URLSearchParams({
       To: phone,
-      Channel: 'sms',
+      Code: code,
     })
 
     const res = await fetch(
-      `https://verify.twilio.com/v2/Services/${VERIFY_SID}/Verifications`,
+      `https://verify.twilio.com/v2/Services/${VERIFY_SID}/VerificationChecks`,
       {
         method: 'POST',
         headers: {
@@ -34,16 +34,18 @@ serve(async (req) => {
       },
     )
 
-    if (!res.ok) {
-      const err = await res.json()
-      throw new Error(`Twilio Verify error: ${err.message}`)
+    const data = await res.json()
+
+    if (data.status === 'approved') {
+      console.log(`✅ OTP verified for ${phone}`)
+      return new Response(JSON.stringify({ success: true, status: 'approved' }), { headers: corsHeaders })
     }
 
-    console.log(`✅ Verify OTP sent to ${phone}`)
-    return new Response(JSON.stringify({ success: true }), { headers: corsHeaders })
+    console.log(`❌ OTP rejected for ${phone}: ${data.status}`)
+    return new Response(JSON.stringify({ success: false, status: data.status }), { status: 401, headers: corsHeaders })
 
   } catch (err) {
-    console.error('❌ send-otp error:', err)
+    console.error('❌ verify-otp error:', err)
     return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: corsHeaders })
   }
 })
