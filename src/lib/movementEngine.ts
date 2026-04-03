@@ -17,14 +17,25 @@ interface LastRecord {
   toolId: string
 }
 
+interface PendingStop {
+  latitude: number
+  longitude: number
+  startedAt: number       // quando começou a esperar
+  contractorId: string
+  siteId: string | null
+  toolIds: string[]       // tools que vão receber o stop
+}
+
 const lastRecords = new Map<string, LastRecord>()  // por tool_id
 const LAST_RECORDS_KEY = 'movement_last_records'
+const PENDING_STOP_KEY = 'movement_pending_stop'
 let stateRestored = false
 let currentCheckoutId: string | null = null
 let checkoutToolIds: string[] = []
 let todayCheckoutDone = false
-let stopTimer: ReturnType<typeof setTimeout> | null = null
-let lastStopPosition: { lat: number; lng: number } | null = null
+
+// Pending stop persistido — sobrevive app kill
+let pendingStop: PendingStop | null = null
 
 // ── Persist/Restore state ───────────────────────────────────────────────
 async function persistLastRecords() {
@@ -33,7 +44,15 @@ async function persistLastRecords() {
   await AsyncStorage.setItem(LAST_RECORDS_KEY, JSON.stringify(obj)).catch(() => {})
 }
 
-async function restoreLastRecords() {
+async function persistPendingStop() {
+  if (pendingStop) {
+    await AsyncStorage.setItem(PENDING_STOP_KEY, JSON.stringify(pendingStop)).catch(() => {})
+  } else {
+    await AsyncStorage.removeItem(PENDING_STOP_KEY).catch(() => {})
+  }
+}
+
+async function restoreState() {
   if (stateRestored) return
   stateRestored = true
   try {
@@ -42,6 +61,13 @@ async function restoreLastRecords() {
       const obj = JSON.parse(raw) as Record<string, LastRecord>
       Object.entries(obj).forEach(([k, v]) => lastRecords.set(k, v))
       console.log(`[Movement] Restored ${lastRecords.size} last records from storage`)
+    }
+  } catch { /* ignore */ }
+  try {
+    const raw = await AsyncStorage.getItem(PENDING_STOP_KEY)
+    if (raw) {
+      pendingStop = JSON.parse(raw) as PendingStop
+      console.log(`[Movement] Restored pending stop from storage (started ${Math.round((Date.now() - pendingStop.startedAt) / 1000)}s ago)`)
     }
   } catch { /* ignore */ }
 }
@@ -104,6 +130,8 @@ export function resetDaily() {
   currentCheckoutId = null
   checkoutToolIds = []
   lastRecords.clear()
+  pendingStop = null
+  persistPendingStop()
 }
 
 // ── Save movement ───────────────────────────────────────────────────────
@@ -134,10 +162,53 @@ async function saveMovement(
   persistLastRecords()
 }
 
+// ── Flush pending stop ──────────────────────────────────────────────────
+/** Check if a pending stop has matured (>4min elapsed) and fire it. */
+async function flushPendingStop() {
+  if (!pendingStop) return
+  const elapsed = Date.now() - pendingStop.startedAt
+  if (elapsed < STOP_TIMEOUT_MS) return
+
+  const { latitude, longitude, contractorId, siteId, toolIds } = pendingStop
+  for (const tid of toolIds) {
+    const lastRec = lastRecords.get(tid)
+    // Skip if already stopped at same place
+    if (lastRec?.event === 'stop') {
+      const d = distanceMeters(latitude, longitude, lastRec.latitude, lastRec.longitude)
+      if (d < MIN_DISTANCE_M) continue
+    }
+    await saveMovement(tid, contractorId, 'stop', latitude, longitude, 0, siteId)
+  }
+
+  pendingStop = null
+  persistPendingStop()
+  console.log(`[Movement] Pending stop flushed after ${Math.round(elapsed / 1000)}s`)
+}
+
+// ── Start pending stop ──────────────────────────────────────────────────
+function startPendingStop(
+  lat: number, lng: number,
+  contractorId: string, siteId: string | null,
+  toolId: string,
+) {
+  const toolIds = checkoutToolIds.length > 0 ? [...checkoutToolIds] : [toolId]
+  pendingStop = {
+    latitude: lat,
+    longitude: lng,
+    startedAt: Date.now(),
+    contractorId,
+    siteId,
+    toolIds,
+  }
+  persistPendingStop()
+  console.log(`[Movement] Pending stop started at (${lat.toFixed(4)}, ${lng.toFixed(4)}) for ${toolIds.length} tools`)
+}
+
 // ── Process detection ───────────────────────────────────────────────────
 /**
  * Chamado cada vez que um beacon BLE é detectado com posição GPS.
  * Aplica as 3 regras de registro inteligente.
+ * Pending stops são persistidos em AsyncStorage — sobrevivem app kill.
  */
 export async function processDetection(
   toolId: string,
@@ -149,7 +220,10 @@ export async function processDetection(
   detectedToolIds: string[],  // todos os tags detectáveis neste momento
 ) {
   // Restaurar estado persistido (sobrevive reload)
-  await restoreLastRecords()
+  await restoreState()
+
+  // Flush any matured pending stop FIRST (survives app restart)
+  await flushPendingStop()
 
   const speedKmh = speedMs != null ? speedMs * 3.6 : 0
   const now = Date.now()
@@ -163,32 +237,21 @@ export async function processDetection(
     return
   }
 
-  const distFromLast = last
-    ? distanceMeters(lat, lng, last.latitude, last.longitude)
-    : Infinity
-
-  const timeSinceLast = last ? now - last.timestamp : Infinity
+  const distFromLast = distanceMeters(lat, lng, last.latitude, last.longitude)
+  const timeSinceLast = now - last.timestamp
 
   // ── Regra 1: MOVEMENT — >15m, <10km/h, tag detectável ──────────────
   if (distFromLast > MIN_DISTANCE_M && speedKmh < SPEED_THRESHOLD_KMH) {
     await saveMovement(toolId, contractorId, 'movement', lat, lng, speedKmh, siteId)
 
-    // Reset stop timer (moveu-se)
-    if (stopTimer) { clearTimeout(stopTimer); stopTimer = null }
+    // Cancel pending stop (tool moved)
+    if (pendingStop) {
+      pendingStop = null
+      persistPendingStop()
+    }
 
-    // Start stop timer — se ficar parado >4min registra stop
-    stopTimer = setTimeout(async () => {
-      const toolsToRecord = checkoutToolIds.length > 0 ? checkoutToolIds : [toolId]
-      for (const tid of toolsToRecord) {
-        const lastRec = lastRecords.get(tid)
-        if (lastRec?.event === 'stop') {
-          const d = distanceMeters(lat, lng, lastRec.latitude, lastRec.longitude)
-          if (d < MIN_DISTANCE_M) continue
-        }
-        await saveMovement(tid, contractorId, 'stop', lat, lng, 0, siteId)
-      }
-    }, STOP_TIMEOUT_MS)
-
+    // Start new pending stop — if stays here >4min, registers stop
+    startPendingStop(lat, lng, contractorId, siteId, toolId)
     return
   }
 
@@ -201,25 +264,23 @@ export async function processDetection(
       await saveMovement(tid, contractorId, 'speed', lat, lng, speedKmh, siteId)
     }
 
-    if (stopTimer) { clearTimeout(stopTimer); stopTimer = null }
+    // Cancel pending stop (tool is moving fast)
+    if (pendingStop) {
+      pendingStop = null
+      persistPendingStop()
+    }
     return
   }
 
-  // ── Regra 2: STOP — parado >4min (tag detectado mas sem movimento) ──
-  // Inicia timer em qualquer detecção se não tem timer ativo
-  if (!stopTimer && last.event !== 'stop') {
-    stopTimer = setTimeout(async () => {
-      const toolsToRecord = checkoutToolIds.length > 0 ? checkoutToolIds : [toolId]
-      for (const tid of toolsToRecord) {
-        const lastRec = lastRecords.get(tid)
-        if (lastRec?.event === 'stop') {
-          const d = distanceMeters(lat, lng, lastRec.latitude, lastRec.longitude)
-          if (d < MIN_DISTANCE_M) continue
-        }
-        await saveMovement(tid, contractorId, 'stop', lat, lng, 0, siteId)
-      }
-      stopTimer = null
-    }, STOP_TIMEOUT_MS)
+  // ── Regra 2: STOP — parado (tag detectado mas sem movimento significativo) ──
+  // Start pending stop if none active — works after ANY event type (including previous stop at different location)
+  if (!pendingStop) {
+    // Only start if position changed from last stop, or last event wasn't stop
+    const shouldStart = last.event !== 'stop'
+      || distFromLast >= MIN_DISTANCE_M
+    if (shouldStart) {
+      startPendingStop(lat, lng, contractorId, siteId, toolId)
+    }
   }
 
   // ── Heartbeat: 1 registro por hora se estacionário (confirma que tag está vivo)
