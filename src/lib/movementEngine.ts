@@ -169,21 +169,18 @@ export async function processDetection(
 
   const timeSinceLast = last ? now - last.timestamp : Infinity
 
-  // ── Regra 1: MOVEMENT — >10m, <10km/h, tag detectável ──────────────
+  // ── Regra 1: MOVEMENT — >15m, <10km/h, tag detectável ──────────────
   if (distFromLast > MIN_DISTANCE_M && speedKmh < SPEED_THRESHOLD_KMH) {
     await saveMovement(toolId, contractorId, 'movement', lat, lng, speedKmh, siteId)
 
     // Reset stop timer (moveu-se)
     if (stopTimer) { clearTimeout(stopTimer); stopTimer = null }
-    lastStopPosition = { lat, lng }
 
     // Start stop timer — se ficar parado >4min registra stop
     stopTimer = setTimeout(async () => {
-      // Registra stop pra TODAS as ferramentas do checkout
       const toolsToRecord = checkoutToolIds.length > 0 ? checkoutToolIds : [toolId]
       for (const tid of toolsToRecord) {
         const lastRec = lastRecords.get(tid)
-        // Só registra se último não foi stop no mesmo lugar
         if (lastRec?.event === 'stop') {
           const d = distanceMeters(lat, lng, lastRec.latitude, lastRec.longitude)
           if (d < MIN_DISTANCE_M) continue
@@ -200,16 +197,33 @@ export async function processDetection(
     && timeSinceLast > SPEED_COOLDOWN_MS
     && last?.event !== 'speed') {
 
-    // Registra pra todos os tags detectáveis (não checkout)
     for (const tid of detectedToolIds) {
       await saveMovement(tid, contractorId, 'speed', lat, lng, speedKmh, siteId)
     }
 
-    // Reset stop timer
     if (stopTimer) { clearTimeout(stopTimer); stopTimer = null }
     return
   }
 
-  // ── Regra 2: STOP é tratada pelo timer acima ─────────────────────────
-  // (timer de 4min após último movimento)
+  // ── Regra 2: STOP — parado >4min (tag detectado mas sem movimento) ──
+  // Inicia timer em qualquer detecção se não tem timer ativo
+  if (!stopTimer && last.event !== 'stop') {
+    stopTimer = setTimeout(async () => {
+      const toolsToRecord = checkoutToolIds.length > 0 ? checkoutToolIds : [toolId]
+      for (const tid of toolsToRecord) {
+        const lastRec = lastRecords.get(tid)
+        if (lastRec?.event === 'stop') {
+          const d = distanceMeters(lat, lng, lastRec.latitude, lastRec.longitude)
+          if (d < MIN_DISTANCE_M) continue
+        }
+        await saveMovement(tid, contractorId, 'stop', lat, lng, 0, siteId)
+      }
+      stopTimer = null
+    }, STOP_TIMEOUT_MS)
+  }
+
+  // ── Heartbeat: 1 registro por hora se estacionário (confirma que tag está vivo)
+  if (timeSinceLast > 60 * 60 * 1000) {
+    await saveMovement(toolId, contractorId, 'stop', lat, lng, 0, siteId)
+  }
 }
