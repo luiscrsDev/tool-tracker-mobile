@@ -102,8 +102,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       body: { phone: normalised, code: code.trim() },
     })
 
+    console.log('[Auth] verify-otp response:', JSON.stringify({ data, error: verifyErr?.message }))
+
     if (verifyErr || !data?.success) {
-      throw new Error('Código inválido ou expirado.')
+      const detail = verifyErr?.message || data?.status || 'unknown'
+      throw new Error(`Código inválido (${detail})`)
     }
 
     // Detect role by checking tables in priority order: master → contractor → worker
