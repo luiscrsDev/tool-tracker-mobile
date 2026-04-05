@@ -400,20 +400,25 @@ export default function AirTagScreen() {
             </Text>
             {tags.map(tag => {
               const linkedTool = tools.find(t => t.assigned_tag === tag.id)
+              // Check if this tag is currently visible in BLE scan
+              const scannedDevice = scannedById.get(tag.tag_id)
+              const inRange = !!scannedDevice
+              const rssi = scannedDevice?.rssi ?? -999
+              const signalBars = rssi > -60 ? 3 : rssi > -80 ? 2 : 1
               return (
                 <View
                   key={`tag-${tag.id}`}
                   style={{
-                    backgroundColor: 'rgba(16,185,129,0.07)',
+                    backgroundColor: inRange ? 'rgba(16,185,129,0.12)' : 'rgba(16,185,129,0.07)',
                     borderRadius: 14, padding: 16,
-                    borderWidth: 1, borderColor: 'rgba(16,185,129,0.3)',
+                    borderWidth: inRange ? 2 : 1, borderColor: inRange ? '#10B981' : 'rgba(16,185,129,0.3)',
                     flexDirection: 'row', alignItems: 'center', gap: 14,
                     marginBottom: 10,
                   }}
                 >
                   <View style={{
                     width: 44, height: 44, borderRadius: 12,
-                    backgroundColor: 'rgba(16,185,129,0.15)',
+                    backgroundColor: inRange ? 'rgba(16,185,129,0.3)' : 'rgba(16,185,129,0.15)',
                     alignItems: 'center', justifyContent: 'center',
                   }}>
                     <Ionicons name="bluetooth" size={22} color="#10B981" />
@@ -425,8 +430,58 @@ export default function AirTagScreen() {
                         🔗 {linkedTool.name}
                       </Text>
                     )}
+                    {inRange && (
+                      <Text style={{ color: 'rgba(255,255,255,0.25)', fontSize: 10, marginTop: 2 }}>
+                        {rssi} dBm
+                      </Text>
+                    )}
                   </View>
-                  <Text style={{ color: '#10B981', fontSize: 10, fontWeight: '700' }}>PAREADO</Text>
+
+                  {/* Beep */}
+                  <TouchableOpacity
+                    onPress={async () => {
+                      const connectId = scannedDevice?.id ?? tag.tag_id
+                      setBeepingId(tag.tag_id)
+                      try {
+                        await playTuyaSound(connectId, tag.eik ?? undefined)
+                      } catch { /* no beep support */ } finally {
+                        setBeepingId(null)
+                      }
+                    }}
+                    disabled={beepingId === tag.tag_id}
+                    style={{
+                      width: 38, height: 38, borderRadius: 10,
+                      backgroundColor: beepingId === tag.tag_id ? 'rgba(250,204,21,0.2)' : 'rgba(255,255,255,0.06)',
+                      alignItems: 'center', justifyContent: 'center',
+                      borderWidth: 1, borderColor: beepingId === tag.tag_id ? 'rgba(250,204,21,0.4)' : 'rgba(255,255,255,0.08)',
+                    }}
+                  >
+                    {beepingId === tag.tag_id
+                      ? <ActivityIndicator size="small" color="#FACC15" />
+                      : <Ionicons name="volume-high" size={16} color="rgba(255,255,255,0.5)" />
+                    }
+                  </TouchableOpacity>
+
+                  {/* Signal / Status */}
+                  <View style={{ alignItems: 'flex-end', gap: 4 }}>
+                    {inRange ? (
+                      <>
+                        <View style={{ flexDirection: 'row', alignItems: 'flex-end', gap: 2 }}>
+                          {[1, 2, 3].map(b => (
+                            <View key={b} style={{
+                              width: 4, borderRadius: 2,
+                              height: b === 1 ? 8 : b === 2 ? 12 : 16,
+                              backgroundColor: b <= signalBars ? '#10B981' : 'rgba(255,255,255,0.15)',
+                            }} />
+                          ))}
+                        </View>
+                        <Text style={{ color: '#10B981', fontSize: 10, fontWeight: '700' }}>ALCANCE</Text>
+                      </>
+                    ) : (
+                      <Text style={{ color: 'rgba(255,255,255,0.3)', fontSize: 10 }}>fora de alcance</Text>
+                    )}
+                    <Text style={{ color: '#10B981', fontSize: 10, fontWeight: '700' }}>PAREADO</Text>
+                  </View>
                 </View>
               )
             })}
