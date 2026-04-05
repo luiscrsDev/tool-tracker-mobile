@@ -98,15 +98,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const normalised = normalisePhone(phone)
 
     // Verify via Twilio Verify (Edge Function)
-    const { data, error: verifyErr } = await supabase.functions.invoke('verify-otp', {
+    const { data: rawData, error: verifyErr } = await supabase.functions.invoke('verify-otp', {
       body: { phone: normalised, code: code.trim() },
     })
 
-    console.log('[Auth] verify-otp response:', JSON.stringify({ data, error: verifyErr?.message }))
+    // Edge functions may return data as string or object
+    const data = typeof rawData === 'string' ? JSON.parse(rawData) : rawData
 
     if (verifyErr || !data?.success) {
-      const detail = verifyErr?.message || data?.status || 'unknown'
-      throw new Error(`Código inválido (${detail})`)
+      throw new Error('Código inválido ou expirado.')
     }
 
     // Detect role by checking tables in priority order: master → contractor → worker
