@@ -9,7 +9,15 @@ import {
   ActivityIndicator,
   Image,
 } from 'react-native'
-import MapView, { Marker } from 'react-native-maps'
+import { Platform } from 'react-native'
+
+let MapView: any = null
+let Marker: any = null
+if (Platform.OS !== 'web') {
+  const maps = require('react-native-maps')
+  MapView = maps.default
+  Marker = maps.Marker
+}
 import { useLocalSearchParams, useRouter } from 'expo-router'
 import { useTools } from '@/context/ToolsContext'
 import { useTags } from '@/context/TagsContext'
@@ -258,25 +266,27 @@ export default function ToolDetailScreen() {
             <Text style={{ fontSize: 10, fontWeight: '700', color: '#94A3B8', letterSpacing: 1, marginBottom: 14 }}>
               ÚLTIMA LOCALIZAÇÃO
             </Text>
-            <MapView
-              style={{ height: 160, borderRadius: 12, overflow: 'hidden', marginBottom: 12 }}
-              region={{
-                latitude: lastLocation.latitude,
-                longitude: lastLocation.longitude,
-                latitudeDelta: 0.005,
-                longitudeDelta: 0.005,
-              }}
-              scrollEnabled={false}
-              zoomEnabled={false}
-              pitchEnabled={false}
-            >
-              <Marker
-                coordinate={{
+            {MapView && Marker && (
+              <MapView
+                style={{ height: 160, borderRadius: 12, overflow: 'hidden', marginBottom: 12 }}
+                region={{
                   latitude: lastLocation.latitude,
                   longitude: lastLocation.longitude,
+                  latitudeDelta: 0.005,
+                  longitudeDelta: 0.005,
                 }}
-              />
-            </MapView>
+                scrollEnabled={false}
+                zoomEnabled={false}
+                pitchEnabled={false}
+              >
+                <Marker
+                  coordinate={{
+                    latitude: lastLocation.latitude,
+                    longitude: lastLocation.longitude,
+                  }}
+                />
+              </MapView>
+            )}
             <Text style={{ fontSize: 14, fontWeight: '700', color: '#1E40AF', marginBottom: 6 }}>
               {resolvedAddresses.get('last') || resolveLocation(lastLocation.latitude, lastLocation.longitude)}
             </Text>
