@@ -7,6 +7,7 @@ import { useTags } from '@/context/TagsContext'
 import { startBackgroundTracking } from '@/lib/backgroundTracking'
 import { addTrackerToMonitor } from '@/lib/bleMonitoring'
 import { supabase } from '@/lib/supabase'
+import { useSites } from '@/context/SitesContext'
 
 type Movement = {
   id: string
@@ -36,8 +37,10 @@ export default function DashboardScreen() {
   const { contractor, admin, signOut } = useAuth()
   const { tools, loading, refreshTools } = useTools()
   const { tags, refreshTags, getTagById } = useTags()
+  const { resolveLocationAsync } = useSites()
   const [refreshing, setRefreshing] = useState(false)
   const [recentMovements, setRecentMovements] = useState<Movement[]>([])
+  const [movementAddresses, setMovementAddresses] = useState<Map<string, string>>(new Map())
 
   const fetchRecentMovements = useCallback(async () => {
     const { data } = await supabase
@@ -45,8 +48,17 @@ export default function DashboardScreen() {
       .select('id, tool_id, event, latitude, longitude, created_at')
       .order('created_at', { ascending: false })
       .limit(3)
-    if (data) setRecentMovements(data)
-  }, [])
+    if (data) {
+      setRecentMovements(data)
+      // Resolve addresses
+      const map = new Map<string, string>()
+      for (const m of data) {
+        const addr = await resolveLocationAsync(m.latitude, m.longitude)
+        map.set(m.id, addr)
+      }
+      setMovementAddresses(map)
+    }
+  }, [resolveLocationAsync])
 
   // Load tools and tags on mount + start background tracking
   useEffect(() => {
@@ -335,34 +347,30 @@ export default function DashboardScreen() {
             Atividade Recente
           </Text>
           <View style={{ backgroundColor: '#fff', borderRadius: 8, overflow: 'hidden' }}>
-            {recentMovements.map((mov, idx) => {
-              const config = EVENT_CONFIG[mov.event] || { icon: '❓', label: mov.event }
-              return (
-                <View
-                  key={mov.id}
-                  style={{
-                    flexDirection: 'row',
-                    alignItems: 'center',
-                    padding: 14,
-                    borderBottomWidth: idx < recentMovements.length - 1 ? 1 : 0,
-                    borderBottomColor: '#f0f0f0',
-                  }}
-                >
-                  <Text style={{ fontSize: 22, marginRight: 12 }}>{config.icon}</Text>
-                  <View style={{ flex: 1 }}>
-                    <Text style={{ fontSize: 14, fontWeight: '600' }}>
-                      {getToolName(mov.tool_id)}
-                    </Text>
-                    <Text style={{ fontSize: 12, color: '#666', marginTop: 2 }}>
-                      {config.label} — {mov.latitude.toFixed(4)}, {mov.longitude.toFixed(4)}
-                    </Text>
-                  </View>
-                  <Text style={{ fontSize: 11, color: '#999' }}>
-                    {formatDateTime(mov.created_at)}
+            {recentMovements.map((mov, idx) => (
+              <View
+                key={mov.id}
+                style={{
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  padding: 14,
+                  borderBottomWidth: idx < recentMovements.length - 1 ? 1 : 0,
+                  borderBottomColor: '#f0f0f0',
+                }}
+              >
+                <View style={{ flex: 1 }}>
+                  <Text style={{ fontSize: 14, fontWeight: '600' }}>
+                    {getToolName(mov.tool_id)}
+                  </Text>
+                  <Text style={{ fontSize: 12, color: '#666', marginTop: 2 }} numberOfLines={1}>
+                    {movementAddresses.get(mov.id) || `${mov.latitude.toFixed(4)}, ${mov.longitude.toFixed(4)}`}
                   </Text>
                 </View>
-              )
-            })}
+                <Text style={{ fontSize: 11, color: '#999' }}>
+                  {formatDateTime(mov.created_at)}
+                </Text>
+              </View>
+            ))}
           </View>
         </View>
       )}
