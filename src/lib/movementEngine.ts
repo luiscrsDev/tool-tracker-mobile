@@ -158,6 +158,17 @@ async function saveMovement(
   if (error) { console.warn(`[Movement] Save skipped: ${error.message}`); return }
   else console.log(`[Movement] ${event} → ${toolId.slice(0, 8)} (${lat.toFixed(4)}, ${lng.toFixed(4)}) ${speedKmh ? speedKmh.toFixed(0) + 'km/h' : ''}`)
 
+  // Sync last_seen_location on tools table so tool-detail always shows latest
+  await supabase.from('tools').update({
+    last_seen_location: {
+      latitude: lat,
+      longitude: lng,
+      timestamp: new Date().toISOString(),
+    },
+  }).eq('id', toolId).then(({ error: e }) => {
+    if (e) console.warn(`[Movement] last_seen_location update failed: ${e.message}`)
+  })
+
   lastRecords.set(toolId, { latitude: lat, longitude: lng, event, timestamp: Date.now(), toolId })
   persistLastRecords()
 }

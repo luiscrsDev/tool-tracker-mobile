@@ -7,8 +7,10 @@ import {
   Alert,
   ActivityIndicator,
   RefreshControl,
+  Image,
 } from 'react-native'
 import { useRouter } from 'expo-router'
+import { Ionicons } from '@expo/vector-icons'
 import { useAuth } from '@/context/AuthContext'
 import { useTools } from '@/context/ToolsContext'
 
@@ -61,29 +63,61 @@ export default function ToolsScreen() {
       key={tool.id}
       style={{
         backgroundColor: '#fff',
-        borderRadius: 8,
-        paddingHorizontal: 14,
-        paddingVertical: 10,
-        marginBottom: 8,
+        borderRadius: 12,
+        padding: 14,
+        marginBottom: 10,
         borderLeftWidth: 3,
         borderLeftColor: !!tool.assigned_tag ? '#10b981' : '#ef4444',
+        flexDirection: 'row',
+        alignItems: 'center',
       }}
       onPress={() => router.push(`/(tabs)/tool-detail?toolId=${tool.id}`)}
     >
-      <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
-        <Text style={{ fontSize: 15, fontWeight: '600', flex: 1 }}>{tool.name}</Text>
-        <View style={{
-          paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4,
-          backgroundColor: !!tool.assigned_tag ? '#d1fae5' : '#fee2e2',
-        }}>
-          <Text style={{ color: !!tool.assigned_tag ? '#065f46' : '#991b1b', fontSize: 10, fontWeight: '600' }}>
-            {!!tool.assigned_tag ? '🟢' : '🔴'}
-          </Text>
+      {/* Thumbnail */}
+      {tool.images && tool.images.length > 0 ? (
+        <Image
+          source={{ uri: tool.images[0] }}
+          style={{ width: 48, height: 48, borderRadius: 8, marginRight: 12 }}
+        />
+      ) : (
+        <View
+          style={{
+            width: 48,
+            height: 48,
+            borderRadius: 8,
+            backgroundColor: '#f0f0f0',
+            justifyContent: 'center',
+            alignItems: 'center',
+            marginRight: 12,
+          }}
+        >
+          <Text style={{ fontSize: 22 }}>{'\uD83D\uDD27'}</Text>
         </View>
+      )}
+
+      {/* Info */}
+      <View style={{ flex: 1 }}>
+        <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+          <Text style={{ fontSize: 15, fontWeight: '600', flex: 1 }}>{tool.name}</Text>
+          <View style={{
+            paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4,
+            backgroundColor: !!tool.assigned_tag ? '#d1fae5' : '#fee2e2',
+          }}>
+            <Text style={{ color: !!tool.assigned_tag ? '#065f46' : '#991b1b', fontSize: 10, fontWeight: '600' }}>
+              {!!tool.assigned_tag ? '\uD83D\uDFE2' : '\uD83D\uDD34'}
+            </Text>
+          </View>
+        </View>
+        <Text style={{ color: '#666', fontSize: 12, marginTop: 2 }}>{tool.type}</Text>
+        {tool.last_seen_location ? (
+          <Text style={{ color: '#999', fontSize: 11, fontStyle: 'italic', marginTop: 2 }}>
+            {tool.last_seen_location}
+          </Text>
+        ) : null}
       </View>
-      <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 2 }}>
-        <Text style={{ color: '#666', fontSize: 12 }}>{tool.type}</Text>
-      </View>
+
+      {/* Chevron */}
+      <Ionicons name="chevron-forward" size={18} color="#ccc" style={{ marginLeft: 8 }} />
     </TouchableOpacity>
   )
 
@@ -145,15 +179,23 @@ export default function ToolsScreen() {
                 backgroundColor: filterBy === filter ? '#eff6ff' : '#fff',
               }}
             >
-              <Text
-                style={{
-                  color: filterBy === filter ? '#2563eb' : '#666',
-                  fontSize: 12,
-                  fontWeight: '600',
-                }}
-              >
-                {filter === 'all' ? 'Todas' : filter === 'connected' ? 'Conectadas' : 'Desconectadas'}
-              </Text>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                {filter === 'connected' && (
+                  <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: '#10b981' }} />
+                )}
+                {filter === 'disconnected' && (
+                  <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: '#ef4444' }} />
+                )}
+                <Text
+                  style={{
+                    color: filterBy === filter ? '#2563eb' : '#666',
+                    fontSize: 12,
+                    fontWeight: '600',
+                  }}
+                >
+                  {filter === 'all' ? 'Todas' : filter === 'connected' ? 'Conectadas' : 'Desconectadas'}
+                </Text>
+              </View>
             </TouchableOpacity>
           ))}
         </View>
@@ -175,7 +217,7 @@ export default function ToolsScreen() {
         </View>
       ) : filteredTools.length > 0 ? (
         <ScrollView
-          contentContainerStyle={{ paddingHorizontal: 16, paddingVertical: 16 }}
+          contentContainerStyle={{ paddingHorizontal: 20, paddingVertical: 16 }}
           refreshControl={
             <RefreshControl refreshing={refreshing} onRefresh={handleRefresh} />
           }
@@ -191,17 +233,30 @@ export default function ToolsScreen() {
             paddingHorizontal: 32,
           }}
         >
-          <Text style={{ fontSize: 40, marginBottom: 16 }}>📭</Text>
-          <Text style={{ fontSize: 16, fontWeight: '600', color: '#333', marginBottom: 8 }}>
+          <Ionicons name="construct-outline" size={64} color="#cbd5e1" style={{ marginBottom: 16 }} />
+          <Text style={{ fontSize: 18, fontWeight: '700', color: '#333', marginBottom: 8 }}>
             Nenhuma ferramenta encontrada
           </Text>
-          <Text style={{ color: '#666', fontSize: 13, textAlign: 'center', lineHeight: 20 }}>
+          <Text style={{ color: '#94a3b8', fontSize: 14, textAlign: 'center', lineHeight: 22, marginBottom: 24 }}>
             {filterBy === 'all'
               ? 'Você ainda não tem ferramentas cadastradas'
               : `Nenhuma ferramenta ${
                   filterBy === 'connected' ? 'conectada' : 'desconectada'
                 } no momento`}
           </Text>
+          <TouchableOpacity
+            onPress={() => router.push('/(tabs)/tool-form')}
+            style={{
+              backgroundColor: '#2563eb',
+              paddingHorizontal: 24,
+              paddingVertical: 12,
+              borderRadius: 8,
+            }}
+          >
+            <Text style={{ color: '#fff', fontSize: 15, fontWeight: '600' }}>
+              Adicionar Ferramenta
+            </Text>
+          </TouchableOpacity>
         </View>
       )}
     </View>

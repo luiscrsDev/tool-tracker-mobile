@@ -71,14 +71,12 @@ export default function HistoryScreen() {
     setRefreshing(false)
   }
 
-  const timeAgo = (ts: string) => {
-    const diff = Date.now() - new Date(ts).getTime()
-    const mins = Math.floor(diff / 60000)
-    if (mins < 1) return 'Agora'
-    if (mins < 60) return `${mins}min atrás`
-    const hours = Math.floor(mins / 60)
-    if (hours < 24) return `${hours}h atrás`
-    return new Date(ts).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })
+  const formatDateTime = (ts: string) => {
+    const d = new Date(ts)
+    return d.toLocaleDateString('pt-BR', {
+      day: '2-digit', month: '2-digit', year: 'numeric',
+      hour: '2-digit', minute: '2-digit',
+    })
   }
 
   // Tool selector
@@ -174,7 +172,7 @@ export default function HistoryScreen() {
                   <Ionicons name="open-outline" size={14} color="#93C5FD" />
                 </View>
                 <Text style={{ fontSize: 11, color: '#94A3B8' }}>
-                  {timeAgo(record.created_at)}
+                  {formatDateTime(record.created_at)}
                 </Text>
               </TouchableOpacity>
             </View>

@@ -8,13 +8,18 @@ import {
   ActivityIndicator,
   RefreshControl,
 } from 'react-native'
+import { Ionicons } from '@expo/vector-icons'
 import { useAuth } from '@/context/AuthContext'
 import { useAlerts } from '@/context/AlertsContext'
 
-const ALERT_COLORS: Record<string, { bg: string; text: string; badge: string }> = {
-  critical: { bg: '#fee2e2', text: '#991b1b', badge: '🔴' },
-  warning: { bg: '#fef3c7', text: '#92400e', badge: '🟡' },
-  info: { bg: '#dbeafe', text: '#1e40af', badge: '🔵' },
+const SEVERITY_CONFIG: Record<string, {
+  color: string
+  icon: keyof typeof Ionicons.glyphMap
+  label: string
+}> = {
+  critical: { color: '#EF4444', icon: 'alert-circle', label: 'críticos' },
+  warning: { color: '#F59E0B', icon: 'time', label: 'avisos' },
+  info: { color: '#3B82F6', icon: 'information-circle', label: 'informativos' },
 }
 
 export default function AlertsScreen() {
@@ -44,103 +49,174 @@ export default function AlertsScreen() {
     }
   }
 
-  const getSeverityColor = (severity: string) => {
-    return ALERT_COLORS[severity] || ALERT_COLORS.info
+  const getConfig = (severity: string) => {
+    return SEVERITY_CONFIG[severity] || SEVERITY_CONFIG.info
+  }
+
+  const countBySeverity = (severity: string) =>
+    alerts.filter(a => a.severity === severity).length
+
+  const renderSeverityPills = () => {
+    const severities = ['critical', 'warning', 'info'] as const
+    const pills = severities
+      .map(sev => ({ sev, count: countBySeverity(sev) }))
+      .filter(({ count }) => count > 0)
+
+    if (pills.length === 0) return null
+
+    return (
+      <View style={{ flexDirection: 'row', gap: 8, marginTop: 8 }}>
+        {pills.map(({ sev, count }) => {
+          const config = SEVERITY_CONFIG[sev]
+          return (
+            <View
+              key={sev}
+              style={{
+                flexDirection: 'row',
+                alignItems: 'center',
+                backgroundColor: `${config.color}15`,
+                paddingHorizontal: 10,
+                paddingVertical: 4,
+                borderRadius: 12,
+              }}
+            >
+              <Ionicons name={config.icon} size={14} color={config.color} />
+              <Text style={{ fontSize: 12, fontWeight: '600', color: config.color, marginLeft: 4 }}>
+                {count} {config.label}
+              </Text>
+            </View>
+          )
+        })}
+      </View>
+    )
   }
 
   const renderAlertCard = (alert: any) => {
-    const colors = getSeverityColor(alert.severity)
+    const config = getConfig(alert.severity)
 
     return (
       <View
         key={alert.id}
         style={{
-          backgroundColor: colors.bg,
-          borderRadius: 8,
-          padding: 16,
+          backgroundColor: '#FFFFFF',
+          borderRadius: 12,
           marginBottom: 12,
           borderLeftWidth: 4,
-          borderLeftColor: colors.text,
+          borderLeftColor: config.color,
+          flexDirection: 'row',
+          shadowColor: '#000',
+          shadowOffset: { width: 0, height: 1 },
+          shadowOpacity: 0.05,
+          shadowRadius: 3,
+          elevation: 2,
         }}
       >
+        {/* Icon strip */}
         <View
           style={{
-            flexDirection: 'row',
-            justifyContent: 'space-between',
-            alignItems: 'flex-start',
-            marginBottom: 12,
+            width: 44,
+            alignItems: 'center',
+            justifyContent: 'center',
+            paddingVertical: 16,
           }}
         >
-          <View style={{ flex: 1 }}>
-            <Text style={{ fontSize: 16, fontWeight: '600', color: colors.text, marginBottom: 4 }}>
-              {colors.badge} {alert.type}
-            </Text>
-            <Text style={{ color: colors.text, fontSize: 13, lineHeight: 18 }}>
-              {alert.message}
-            </Text>
+          <View
+            style={{
+              width: 32,
+              height: 32,
+              borderRadius: 16,
+              backgroundColor: `${config.color}15`,
+              alignItems: 'center',
+              justifyContent: 'center',
+            }}
+          >
+            <Ionicons name={config.icon} size={18} color={config.color} />
           </View>
         </View>
 
-        <View
-          style={{
-            flexDirection: 'row',
-            justifyContent: 'space-between',
-            alignItems: 'center',
-            paddingTop: 12,
-            borderTopWidth: 1,
-            borderTopColor: `${colors.text}20`,
-          }}
-        >
-          <Text style={{ color: colors.text, fontSize: 11, opacity: 0.7 }}>
-            {new Date(alert.created_at).toLocaleDateString('pt-BR')}
-          </Text>
-
-          <TouchableOpacity
-            onPress={() => {
-              Alert.alert('Resolver Alerta?', alert.message, [
-                { text: 'Cancelar', style: 'cancel' },
-                {
-                  text: 'Resolver',
-                  style: 'default',
-                  onPress: () => handleResolveAlert(alert.id),
-                },
-              ])
-            }}
+        {/* Content */}
+        <View style={{ flex: 1, paddingVertical: 14, paddingRight: 16 }}>
+          <Text
             style={{
-              paddingHorizontal: 12,
-              paddingVertical: 6,
-              borderRadius: 4,
-              backgroundColor: colors.text,
-              opacity: 0.2,
+              fontSize: 15,
+              fontWeight: '700',
+              color: '#0F172A',
+              marginBottom: 4,
             }}
           >
-            <Text style={{ color: colors.text, fontSize: 11, fontWeight: '600' }}>
-              Resolver
+            {alert.type}
+          </Text>
+          <Text
+            style={{
+              fontSize: 13,
+              color: '#64748B',
+              lineHeight: 18,
+              marginBottom: 12,
+            }}
+          >
+            {alert.message}
+          </Text>
+
+          <View
+            style={{
+              flexDirection: 'row',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+            }}
+          >
+            <Text style={{ color: '#94A3B8', fontSize: 11 }}>
+              {new Date(alert.created_at).toLocaleDateString('pt-BR')}
             </Text>
-          </TouchableOpacity>
+
+            <TouchableOpacity
+              onPress={() => {
+                Alert.alert('Resolver Alerta?', alert.message, [
+                  { text: 'Cancelar', style: 'cancel' },
+                  {
+                    text: 'Resolver',
+                    style: 'default',
+                    onPress: () => handleResolveAlert(alert.id),
+                  },
+                ])
+              }}
+              style={{
+                paddingHorizontal: 14,
+                paddingVertical: 6,
+                borderRadius: 6,
+                borderWidth: 1,
+                borderColor: config.color,
+                backgroundColor: 'transparent',
+              }}
+            >
+              <Text style={{ color: config.color, fontSize: 12, fontWeight: '600' }}>
+                Resolver
+              </Text>
+            </TouchableOpacity>
+          </View>
         </View>
       </View>
     )
   }
 
   return (
-    <View style={{ flex: 1, backgroundColor: '#f5f5f5' }}>
+    <View style={{ flex: 1, backgroundColor: '#F1F5F9' }}>
       {/* Header */}
       <View
         style={{
           backgroundColor: '#fff',
-          paddingHorizontal: 16,
+          paddingHorizontal: 20,
           paddingVertical: 16,
           borderBottomWidth: 1,
-          borderBottomColor: '#eee',
+          borderBottomColor: '#E2E8F0',
         }}
       >
-        <Text style={{ fontSize: 24, fontWeight: 'bold' }}>
-          🔔 Alertas
+        <Text style={{ fontSize: 24, fontWeight: 'bold', color: '#0F172A' }}>
+          Alertas
         </Text>
-        <Text style={{ color: '#666', fontSize: 13, marginTop: 4 }}>
+        <Text style={{ color: '#64748B', fontSize: 13, marginTop: 4 }}>
           {alerts.length} alerta{alerts.length !== 1 ? 's' : ''} não resolvido{alerts.length !== 1 ? 's' : ''}
         </Text>
+        {renderSeverityPills()}
       </View>
 
       {/* Content */}
@@ -153,13 +229,13 @@ export default function AlertsScreen() {
           }}
         >
           <ActivityIndicator color="#2563eb" size="large" />
-          <Text style={{ color: '#666', marginTop: 12, fontSize: 14 }}>
+          <Text style={{ color: '#64748B', marginTop: 12, fontSize: 14 }}>
             Carregando alertas...
           </Text>
         </View>
       ) : alerts.length > 0 ? (
         <ScrollView
-          contentContainerStyle={{ paddingHorizontal: 16, paddingVertical: 16 }}
+          contentContainerStyle={{ paddingHorizontal: 20, paddingVertical: 16 }}
           refreshControl={
             <RefreshControl refreshing={refreshing} onRefresh={handleRefresh} />
           }
@@ -181,12 +257,27 @@ export default function AlertsScreen() {
             paddingHorizontal: 32,
           }}
         >
-          <Text style={{ fontSize: 40, marginBottom: 16 }}>✨</Text>
-          <Text style={{ fontSize: 16, fontWeight: '600', color: '#333', marginBottom: 8 }}>
-            Nenhum alerta ativo
+          <Ionicons name="checkmark-circle" size={64} color="#22C55E" />
+          <Text
+            style={{
+              fontSize: 18,
+              fontWeight: '700',
+              color: '#0F172A',
+              marginTop: 16,
+              marginBottom: 8,
+            }}
+          >
+            Tudo em ordem!
           </Text>
-          <Text style={{ color: '#666', fontSize: 13, textAlign: 'center', lineHeight: 20 }}>
-            Tudo está funcionando normalmente com suas ferramentas
+          <Text
+            style={{
+              color: '#64748B',
+              fontSize: 14,
+              textAlign: 'center',
+              lineHeight: 20,
+            }}
+          >
+            Nenhum alerta ativo no momento
           </Text>
         </View>
       )}

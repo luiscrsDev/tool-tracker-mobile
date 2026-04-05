@@ -9,6 +9,7 @@ import {
   ActivityIndicator,
   Image,
 } from 'react-native'
+import MapView, { Marker } from 'react-native-maps'
 import { useLocalSearchParams, useRouter } from 'expo-router'
 import { useTools } from '@/context/ToolsContext'
 import { useTags } from '@/context/TagsContext'
@@ -257,6 +258,25 @@ export default function ToolDetailScreen() {
             <Text style={{ fontSize: 10, fontWeight: '700', color: '#94A3B8', letterSpacing: 1, marginBottom: 14 }}>
               ÚLTIMA LOCALIZAÇÃO
             </Text>
+            <MapView
+              style={{ height: 160, borderRadius: 12, overflow: 'hidden', marginBottom: 12 }}
+              region={{
+                latitude: lastLocation.latitude,
+                longitude: lastLocation.longitude,
+                latitudeDelta: 0.005,
+                longitudeDelta: 0.005,
+              }}
+              scrollEnabled={false}
+              zoomEnabled={false}
+              pitchEnabled={false}
+            >
+              <Marker
+                coordinate={{
+                  latitude: lastLocation.latitude,
+                  longitude: lastLocation.longitude,
+                }}
+              />
+            </MapView>
             <Text style={{ fontSize: 14, fontWeight: '700', color: '#1E40AF', marginBottom: 6 }}>
               {resolvedAddresses.get('last') || resolveLocation(lastLocation.latitude, lastLocation.longitude)}
             </Text>
@@ -299,28 +319,52 @@ export default function ToolDetailScreen() {
             </Text>
           ) : (
             <View style={{ gap: 10 }}>
-              {recentHistory.map((record, i) => (
-                <View key={record.id} style={{
-                  flexDirection: 'row', gap: 10, alignItems: 'flex-start',
-                  paddingBottom: i < recentHistory.length - 1 ? 10 : 0,
-                  borderBottomWidth: i < recentHistory.length - 1 ? 1 : 0,
-                  borderBottomColor: '#F1F5F9',
-                }}>
-                  <View style={{
-                    width: 8, height: 8, borderRadius: 4,
-                    backgroundColor: i === 0 ? '#2563EB' : '#BFDBFE',
-                    marginTop: 4, flexShrink: 0,
-                  }} />
-                  <View style={{ flex: 1 }}>
-                    <Text style={{ fontSize: 12, fontWeight: '600', color: '#1E40AF' }}>
-                      {resolvedAddresses.get(record.id) || resolveLocation(record.latitude, record.longitude)}
-                    </Text>
-                    <Text style={{ fontSize: 10, color: '#CBD5E1', marginTop: 2 }}>
-                      {new Date(record.created_at).toLocaleString('pt-BR')}
-                    </Text>
+              {recentHistory.map((record, i) => {
+                const eventConfig = record.event === 'movement'
+                  ? { color: '#2563EB', icon: '→', label: 'Movimento' }
+                  : record.event === 'stop'
+                  ? { color: '#EF4444', icon: '📍', label: 'Parada' }
+                  : record.event === 'speed'
+                  ? { color: '#F97316', icon: '🚗', label: 'Velocidade' }
+                  : { color: '#94A3B8', icon: '•', label: record.event }
+                return (
+                  <View key={record.id} style={{
+                    flexDirection: 'row', gap: 10, alignItems: 'flex-start',
+                    paddingBottom: i < recentHistory.length - 1 ? 10 : 0,
+                    borderBottomWidth: i < recentHistory.length - 1 ? 1 : 0,
+                    borderBottomColor: '#F1F5F9',
+                  }}>
+                    <View style={{
+                      width: 24, height: 24, borderRadius: 12,
+                      backgroundColor: eventConfig.color + '20',
+                      alignItems: 'center', justifyContent: 'center',
+                      marginTop: 2, flexShrink: 0,
+                    }}>
+                      <Text style={{ fontSize: 12, color: eventConfig.color }}>
+                        {eventConfig.icon}
+                      </Text>
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                        <Text style={{ fontSize: 12, fontWeight: '600', color: '#1E40AF', flex: 1 }} numberOfLines={1}>
+                          {resolvedAddresses.get(record.id) || resolveLocation(record.latitude, record.longitude)}
+                        </Text>
+                        <View style={{
+                          backgroundColor: eventConfig.color + '15',
+                          paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4,
+                        }}>
+                          <Text style={{ fontSize: 9, fontWeight: '700', color: eventConfig.color, letterSpacing: 0.3 }}>
+                            {eventConfig.label.toUpperCase()}
+                          </Text>
+                        </View>
+                      </View>
+                      <Text style={{ fontSize: 10, color: '#CBD5E1', marginTop: 2 }}>
+                        {new Date(record.created_at).toLocaleString('pt-BR')}
+                      </Text>
+                    </View>
                   </View>
-                </View>
-              ))}
+                )
+              })}
             </View>
           )}
         </View>

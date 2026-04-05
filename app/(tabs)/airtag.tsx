@@ -518,6 +518,47 @@ export default function AirTagScreen() {
           {/* Handle */}
           <View style={{ width: 36, height: 4, borderRadius: 2, backgroundColor: 'rgba(255,255,255,0.15)', alignSelf: 'center', marginBottom: 24 }} />
 
+          {/* Progress Steps */}
+          {(() => {
+            const stepIndex = step === 'confirm' ? 0 : step === 'form' ? 1 : 2
+            const labels = ['Confirmar', 'Configurar', 'Pronto']
+            return (
+              <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 24, paddingHorizontal: 12 }}>
+                {labels.map((label, i) => (
+                  <View key={label} style={{ flexDirection: 'row', alignItems: 'center', flex: i < labels.length - 1 ? 1 : undefined }}>
+                    <View style={{ alignItems: 'center' }}>
+                      <View style={{
+                        width: 28, height: 28, borderRadius: 14,
+                        backgroundColor: i < stepIndex ? '#10B981' : i === stepIndex ? '#2563EB' : '#334155',
+                        alignItems: 'center', justifyContent: 'center',
+                      }}>
+                        {i < stepIndex ? (
+                          <Ionicons name="checkmark" size={16} color="white" />
+                        ) : (
+                          <Text style={{ color: i === stepIndex ? 'white' : 'rgba(255,255,255,0.4)', fontSize: 13, fontWeight: '700' }}>
+                            {i + 1}
+                          </Text>
+                        )}
+                      </View>
+                      <Text style={{
+                        color: i <= stepIndex ? 'white' : 'rgba(255,255,255,0.4)',
+                        fontSize: 10, fontWeight: '600', marginTop: 4,
+                      }}>
+                        {label}
+                      </Text>
+                    </View>
+                    {i < labels.length - 1 && (
+                      <View style={{
+                        flex: 1, height: 2, marginHorizontal: 8, marginBottom: 18,
+                        backgroundColor: i < stepIndex ? '#10B981' : '#334155',
+                      }} />
+                    )}
+                  </View>
+                ))}
+              </View>
+            )
+          })()}
+
           {step === 'confirm' && (
             <>
               {/* Device icon */}

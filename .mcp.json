@@ -1,0 +1,18 @@
+{
+  "mcpServers": {
+    "stitch": {
+      "command": "npx",
+      "args": ["-y", "stitch-mcp"],
+      "env": {
+        "GOOGLE_CLOUD_PROJECT": "loyal-theater-491004-v8"
+      }
+    },
+    "21st-magic": {
+      "command": "npx",
+      "args": ["-y", "@21st-dev/magic"],
+      "env": {
+        "TWENTY_FIRST_API_KEY": "an_sk_96a69ce454f158267829d12a063c2a562423310ac0cbf699833554cad557765b"
+      }
+    }
+  }
+}
