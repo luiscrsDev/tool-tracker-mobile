@@ -16,6 +16,12 @@ serve(async (req) => {
     const { phone, code } = await req.json()
     if (!phone || !code) return new Response(JSON.stringify({ error: 'Phone and code required' }), { status: 400, headers: corsHeaders })
 
+    // Dev bypass — remove after Twilio Verify is fixed
+    if (code === '000000') {
+      console.log(`⚠️ Dev bypass for ${phone}`)
+      return new Response(JSON.stringify({ success: true, status: 'approved' }), { headers: corsHeaders })
+    }
+
     // Verify code via Twilio Verify
     const body = new URLSearchParams({
       To: phone,
