@@ -1,6 +1,9 @@
 import { useEffect, useState, useCallback } from 'react'
-import { View, Text, TouchableOpacity, ScrollView, Alert, ActivityIndicator, RefreshControl } from 'react-native'
+import { View, Text, TouchableOpacity, ScrollView, Alert, ActivityIndicator, RefreshControl, Linking, Platform } from 'react-native'
 import { useRouter } from 'expo-router'
+import { Ionicons } from '@expo/vector-icons'
+import * as Location from 'expo-location'
+import { BleManager } from 'react-native-ble-plx'
 import { useAuth } from '@/context/AuthContext'
 import { useTools } from '@/context/ToolsContext'
 import { useTags } from '@/context/TagsContext'
@@ -41,6 +44,41 @@ export default function DashboardScreen() {
   const [refreshing, setRefreshing] = useState(false)
   const [recentMovements, setRecentMovements] = useState<Movement[]>([])
   const [movementAddresses, setMovementAddresses] = useState<Map<string, string>>(new Map())
+  const [missingPermissions, setMissingPermissions] = useState<string[]>([])
+
+  // Check permissions on mount
+  useEffect(() => {
+    const checkPermissions = async () => {
+      const missing: string[] = []
+
+      // Check foreground location
+      const { status: fgStatus } = await Location.getForegroundPermissionsAsync()
+      if (fgStatus !== 'granted') {
+        missing.push('Localização')
+      } else {
+        // Check background location
+        const { status: bgStatus } = await Location.getBackgroundPermissionsAsync()
+        if (bgStatus !== 'granted') {
+          missing.push('Localização em segundo plano')
+        }
+      }
+
+      // Check Bluetooth
+      try {
+        const ble = new BleManager()
+        const state = await ble.state()
+        if (state !== 'PoweredOn') {
+          missing.push('Bluetooth')
+        }
+        ble.destroy()
+      } catch {
+        missing.push('Bluetooth')
+      }
+
+      setMissingPermissions(missing)
+    }
+    checkPermissions()
+  }, [])
 
   const fetchRecentMovements = useCallback(async () => {
     const { data } = await supabase
@@ -187,6 +225,44 @@ export default function DashboardScreen() {
           {contractor?.email || admin?.email || 'N/A'}
         </Text>
       </View>
+
+      {/* Permission Warning Banner */}
+      {missingPermissions.length > 0 && (
+        <TouchableOpacity
+          onPress={() => {
+            Alert.alert(
+              'Permissoes Necessarias',
+              `Para rastrear suas ferramentas, o app precisa de:\n\n${missingPermissions.map(p => `• ${p}`).join('\n')}\n\nDeseja abrir as configuracoes?`,
+              [
+                { text: 'Depois', style: 'cancel' },
+                { text: 'Abrir Configuracoes', onPress: () => Linking.openSettings() },
+              ],
+            )
+          }}
+          style={{
+            backgroundColor: '#FEF2F2',
+            borderRadius: 12,
+            padding: 14,
+            marginBottom: 16,
+            flexDirection: 'row',
+            alignItems: 'center',
+            gap: 12,
+            borderWidth: 1,
+            borderColor: '#FECACA',
+          }}
+        >
+          <Ionicons name="warning" size={24} color="#EF4444" />
+          <View style={{ flex: 1 }}>
+            <Text style={{ fontSize: 13, fontWeight: '700', color: '#991B1B' }}>
+              Permissoes pendentes
+            </Text>
+            <Text style={{ fontSize: 11, color: '#DC2626', marginTop: 2 }}>
+              {missingPermissions.join(', ')} — toque para configurar
+            </Text>
+          </View>
+          <Ionicons name="chevron-forward" size={16} color="#EF4444" />
+        </TouchableOpacity>
+      )}
 
       {/* Quick Action Buttons */}
       <View
