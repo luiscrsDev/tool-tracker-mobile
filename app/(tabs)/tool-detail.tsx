@@ -9,15 +9,15 @@ import {
   ActivityIndicator,
   Image,
 } from 'react-native'
-import { Platform } from 'react-native'
-
-let MapView: any = null
-let Marker: any = null
-if (Platform.OS !== 'web') {
-  const maps = require('react-native-maps')
-  MapView = maps.default
-  Marker = maps.Marker
-}
+// MapView disabled — needs Google Maps API key configured in app.json
+// import { Platform } from 'react-native'
+// let MapView: any = null
+// let Marker: any = null
+// if (Platform.OS !== 'web') {
+//   const maps = require('react-native-maps')
+//   MapView = maps.default
+//   Marker = maps.Marker
+// }
 import { useLocalSearchParams, useRouter } from 'expo-router'
 import { useTools } from '@/context/ToolsContext'
 import { useTags } from '@/context/TagsContext'
