@@ -109,9 +109,9 @@ export default function ToolsScreen() {
           </View>
         </View>
         <Text style={{ color: '#666', fontSize: 12, marginTop: 2 }}>{tool.type}</Text>
-        {tool.last_seen_location ? (
+        {tool.last_seen_location?.latitude ? (
           <Text style={{ color: '#999', fontSize: 11, fontStyle: 'italic', marginTop: 2 }}>
-            {tool.last_seen_location}
+            {`${tool.last_seen_location.latitude.toFixed(4)}, ${tool.last_seen_location.longitude.toFixed(4)}`}
           </Text>
         ) : null}
       </View>
