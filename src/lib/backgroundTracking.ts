@@ -68,34 +68,10 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }: TaskMan
   const supabaseKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY
   if (!supabaseUrl || !supabaseKey) return
 
-  // BLE-tagged tools: update location for all detected tags
-  const taggedTools = tools.filter(t => t.tagId)
-  for (const tool of taggedTools) {
-    try {
-      await fetch(`${supabaseUrl}/rest/v1/tools?id=eq.${tool.id}`, {
-        method: 'PATCH',
-        headers: {
-          apikey: supabaseKey,
-          Authorization: `Bearer ${supabaseKey}`,
-          'Content-Type': 'application/json',
-          Prefer: 'return=minimal',
-        },
-        body: JSON.stringify({
-          last_seen_location: {
-            latitude, longitude,
-            accuracy: latest.coords.accuracy,
-            timestamp: new Date(latest.timestamp).toISOString(),
-          },
-        }),
-      })
-
-      await processDetection(
-        tool.id, tool.contractorId,
-        latitude, longitude, speed,
-        null, taggedTools.map(t => t.id),
-      )
-    } catch { /* silent */ }
-  }
+  // BLE-tagged tools: do NOT process movement from GPS alone.
+  // Their position is only valid when BLE beacon is physically detected nearby.
+  // bleMonitoring.ts handles detection → GPS → processDetection for tagged tools.
+  // The background task only restarts BLE scan if it died (line 56-59 above).
 
   // GPS-only tools: save location directly
   const gpsOnlyTools = tools.filter(t => !t.tagId)

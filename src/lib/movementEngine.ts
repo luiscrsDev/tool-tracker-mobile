@@ -174,16 +174,31 @@ async function saveMovement(
 }
 
 // ── Flush pending stop ──────────────────────────────────────────────────
-/** Check if a pending stop has matured (>4min elapsed) and fire it. */
-async function flushPendingStop() {
+/**
+ * Check if a pending stop has matured (>4min elapsed) and fire it.
+ * Uses the CURRENT lat/lng (from the live BLE detection) instead of the
+ * stale coordinates saved when the pending stop was created — this avoids
+ * recording a stop at an old position after the app was killed and reopened
+ * in a different location.
+ */
+async function flushPendingStop(currentLat: number, currentLng: number) {
   if (!pendingStop) return
   const elapsed = Date.now() - pendingStop.startedAt
   if (elapsed < STOP_TIMEOUT_MS) return
 
+  // Use the pending stop's saved position ONLY if it's close to current position.
+  // If we're far away, the app was killed and reopened elsewhere — skip the stale stop.
+  const distFromPending = distanceMeters(currentLat, currentLng, pendingStop.latitude, pendingStop.longitude)
+  if (distFromPending > 500) {
+    console.log(`[Movement] Pending stop discarded — ${Math.round(distFromPending)}m from current position (stale)`)
+    pendingStop = null
+    persistPendingStop()
+    return
+  }
+
   const { latitude, longitude, contractorId, siteId, toolIds } = pendingStop
   for (const tid of toolIds) {
     const lastRec = lastRecords.get(tid)
-    // Skip if already stopped at same place
     if (lastRec?.event === 'stop') {
       const d = distanceMeters(latitude, longitude, lastRec.latitude, lastRec.longitude)
       if (d < MIN_DISTANCE_M) continue
@@ -234,7 +249,8 @@ export async function processDetection(
   await restoreState()
 
   // Flush any matured pending stop FIRST (survives app restart)
-  await flushPendingStop()
+  // Pass current GPS so stale stops from killed sessions are discarded
+  await flushPendingStop(lat, lng)
 
   const speedKmh = speedMs != null ? speedMs * 3.6 : 0
   const now = Date.now()
