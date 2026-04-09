@@ -11,6 +11,7 @@
 
 import { BleManager } from 'react-native-ble-plx'
 import * as Location from 'expo-location'
+import AsyncStorage from '@react-native-async-storage/async-storage'
 import { processDetection } from './movementEngine'
 
 // Find Easy service UUID — usado para filtrar o scan no iOS background
@@ -44,7 +45,29 @@ const monitoredTrackers = new Map<string, MonitoredTool>()
 // tagId → last save timestamp (throttle)
 const lastSaved = new Map<string, number>()
 
+// toolId → last BLE detection timestamp (persisted, used by background task)
+const BLE_LAST_SEEN_KEY = 'ble_last_seen'
+let bleLastSeen = new Map<string, number>()
+
+async function persistBleLastSeen() {
+  const obj: Record<string, number> = {}
+  bleLastSeen.forEach((v, k) => { obj[k] = v })
+  await AsyncStorage.setItem(BLE_LAST_SEEN_KEY, JSON.stringify(obj)).catch(() => {})
+}
+
+export async function getBleLastSeen(): Promise<Map<string, number>> {
+  try {
+    const raw = await AsyncStorage.getItem(BLE_LAST_SEEN_KEY)
+    if (raw) {
+      const obj = JSON.parse(raw) as Record<string, number>
+      return new Map(Object.entries(obj))
+    }
+  } catch { /* ignore */ }
+  return new Map()
+}
+
 const MIN_INTERVAL_MS = 5 * 60 * 1000 // 5 minutes per tracker
+const BLE_VALIDITY_MS = 30 * 60 * 1000 // 30 min — BLE detection considered valid for background tracking
 
 let manager: BleManager | null = null
 let isScanning = false
@@ -102,6 +125,9 @@ async function saveDetection(tagId: string, tool: MonitoredTool): Promise<void> 
     })
 
     lastSaved.set(tagId, Date.now())
+    // Persist BLE detection time so background GPS task knows this tool is nearby
+    bleLastSeen.set(tool.toolId, Date.now())
+    persistBleLastSeen()
     console.log(`[BLE Monitor] ✅ ${tool.toolName} (${tagId}) → ${latitude.toFixed(5)}, ${longitude.toFixed(5)}`)
     onDetectionCallback?.({ toolId: tool.toolId, latitude, longitude, accuracy: accuracy ?? null, timestamp })
 

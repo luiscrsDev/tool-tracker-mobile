@@ -2,7 +2,7 @@ import * as TaskManager from 'expo-task-manager'
 import * as Location from 'expo-location'
 import AsyncStorage from '@react-native-async-storage/async-storage'
 import { processDetection } from './movementEngine'
-import { startBleMonitoring, stopBleMonitoring, isMonitoring } from './bleMonitoring'
+import { startBleMonitoring, stopBleMonitoring, isMonitoring, getBleLastSeen } from './bleMonitoring'
 
 export const BACKGROUND_LOCATION_TASK = 'background-location-task'
 const ACTIVE_TOOLS_KEY = 'activeTrackingTools'
@@ -68,10 +68,43 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }: TaskMan
   const supabaseKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY
   if (!supabaseUrl || !supabaseKey) return
 
-  // BLE-tagged tools: do NOT process movement from GPS alone.
-  // Their position is only valid when BLE beacon is physically detected nearby.
-  // bleMonitoring.ts handles detection → GPS → processDetection for tagged tools.
-  // The background task only restarts BLE scan if it died (line 56-59 above).
+  // BLE-tagged tools: only process if BLE detected them recently (within 30 min).
+  // This allows background tracking to continue after BLE scan dies,
+  // while preventing ghost movements when tools are not physically nearby.
+  const bleLastSeen = await getBleLastSeen()
+  const BLE_VALIDITY_MS = 30 * 60 * 1000 // 30 min
+  const now = Date.now()
+  const taggedTools = tools.filter(t => t.tagId)
+  for (const tool of taggedTools) {
+    const lastBle = bleLastSeen.get(tool.id) ?? 0
+    if (now - lastBle > BLE_VALIDITY_MS) continue // BLE detection too old, skip
+
+    try {
+      await fetch(`${supabaseUrl}/rest/v1/tools?id=eq.${tool.id}`, {
+        method: 'PATCH',
+        headers: {
+          apikey: supabaseKey,
+          Authorization: `Bearer ${supabaseKey}`,
+          'Content-Type': 'application/json',
+          Prefer: 'return=minimal',
+        },
+        body: JSON.stringify({
+          last_seen_location: {
+            latitude, longitude,
+            accuracy: latest.coords.accuracy,
+            timestamp: new Date(latest.timestamp).toISOString(),
+          },
+        }),
+      })
+
+      await processDetection(
+        tool.id, tool.contractorId,
+        latitude, longitude, speed,
+        null, taggedTools.map(t => t.id),
+      )
+      console.log(`[BG] ✅ ${tool.name} (BLE valid ${Math.round((now - lastBle) / 60000)}min ago) → ${latitude.toFixed(5)}, ${longitude.toFixed(5)}`)
+    } catch { /* silent */ }
+  }
 
   // GPS-only tools: save location directly
   const gpsOnlyTools = tools.filter(t => !t.tagId)
