@@ -72,6 +72,69 @@ const BLE_VALIDITY_MS = 30 * 60 * 1000 // 30 min — BLE detection considered va
 let manager: BleManager | null = null
 let isScanning = false
 
+// ─── Quick BLE scan (for background GPS callbacks) ───────────────────────────
+
+/**
+ * Perform a short BLE scan (5s) and return tool IDs of detected known trackers.
+ * Designed to be called from the background GPS task every 2 min.
+ * Updates bleLastSeen so background tracking stays valid.
+ */
+export async function quickBleScan(): Promise<string[]> {
+  const detected = new Set<string>()
+  let scanMgr: BleManager | null = null
+
+  try {
+    scanMgr = manager ?? new BleManager()
+    const state = await scanMgr.state()
+    if (state !== 'PoweredOn') {
+      console.log('[BLE QuickScan] Bluetooth not powered on')
+      return []
+    }
+
+    await new Promise<void>((resolve) => {
+      scanMgr!.startDeviceScan(null, { allowDuplicates: false }, (error, device) => {
+        if (error || !device?.id) return
+
+        // Check by device ID (MAC)
+        let tool = monitoredTrackers.get(device.id)
+
+        // Fallback: match by manufacturer data (for Apple Find My)
+        if (!tool && device.manufacturerData) {
+          for (const [key, t] of monitoredTrackers.entries()) {
+            if (key === device.manufacturerData) {
+              tool = t
+              break
+            }
+          }
+        }
+
+        if (tool) {
+          detected.add(tool.toolId)
+          bleLastSeen.set(tool.toolId, Date.now())
+          console.log(`[BLE QuickScan] 📡 ${tool.toolName}`)
+        }
+      })
+
+      // Stop after 5 seconds
+      setTimeout(() => {
+        try { scanMgr?.stopDeviceScan() } catch { /* ignore */ }
+        resolve()
+      }, 5000)
+    })
+
+    if (detected.size > 0) {
+      persistBleLastSeen()
+      console.log(`[BLE QuickScan] ✅ ${detected.size} tag(s) detected`)
+    } else {
+      console.log('[BLE QuickScan] No known tags found')
+    }
+  } catch (err) {
+    console.warn('[BLE QuickScan] Error:', (err as Error)?.message)
+  }
+
+  return Array.from(detected)
+}
+
 // ─── Internal save ────────────────────────────────────────────────────────────
 
 async function saveDetection(tagId: string, tool: MonitoredTool): Promise<void> {

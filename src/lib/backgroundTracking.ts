@@ -2,7 +2,7 @@ import * as TaskManager from 'expo-task-manager'
 import * as Location from 'expo-location'
 import AsyncStorage from '@react-native-async-storage/async-storage'
 import { processDetection } from './movementEngine'
-import { startBleMonitoring, stopBleMonitoring, isMonitoring, getBleLastSeen } from './bleMonitoring'
+import { startBleMonitoring, stopBleMonitoring, isMonitoring, getBleLastSeen, quickBleScan } from './bleMonitoring'
 
 export const BACKGROUND_LOCATION_TASK = 'background-location-task'
 const ACTIVE_TOOLS_KEY = 'activeTrackingTools'
@@ -52,12 +52,6 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }: TaskMan
   const locations = data?.locations
   if (!locations || locations.length === 0) return
 
-  // Restart BLE scan if it died in background
-  if (!isMonitoring()) {
-    startBleMonitoring()
-    console.log('[BG] BLE scan restarted from background task')
-  }
-
   const latest = locations[locations.length - 1]
   const { latitude, longitude, speed } = latest.coords
   const tools = await getPersistedTools()
@@ -68,16 +62,23 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }: TaskMan
   const supabaseKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY
   if (!supabaseUrl || !supabaseKey) return
 
+  // Run a quick 5s BLE scan to detect nearby tags (refreshes bleLastSeen)
+  const taggedTools = tools.filter(t => t.tagId)
+  if (taggedTools.length > 0) {
+    await quickBleScan()
+  }
+
   // BLE-tagged tools: only process if BLE detected them recently (within 30 min).
-  // This allows background tracking to continue after BLE scan dies,
-  // while preventing ghost movements when tools are not physically nearby.
+  // quickBleScan above refreshes timestamps, so tools nearby will always be valid.
   const bleLastSeen = await getBleLastSeen()
   const BLE_VALIDITY_MS = 30 * 60 * 1000 // 30 min
   const now = Date.now()
-  const taggedTools = tools.filter(t => t.tagId)
   for (const tool of taggedTools) {
     const lastBle = bleLastSeen.get(tool.id) ?? 0
-    if (now - lastBle > BLE_VALIDITY_MS) continue // BLE detection too old, skip
+    if (now - lastBle > BLE_VALIDITY_MS) {
+      console.log(`[BG] ⏭️ ${tool.name} — BLE stale (${Math.round((now - lastBle) / 60000)}min ago)`)
+      continue
+    }
 
     try {
       await fetch(`${supabaseUrl}/rest/v1/tools?id=eq.${tool.id}`, {
@@ -102,7 +103,7 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }: TaskMan
         latitude, longitude, speed,
         null, taggedTools.map(t => t.id),
       )
-      console.log(`[BG] ✅ ${tool.name} (BLE valid ${Math.round((now - lastBle) / 60000)}min ago) → ${latitude.toFixed(5)}, ${longitude.toFixed(5)}`)
+      console.log(`[BG] ✅ ${tool.name} (BLE ${Math.round((now - lastBle) / 60000)}min ago) → ${latitude.toFixed(5)}, ${longitude.toFixed(5)}`)
     } catch { /* silent */ }
   }
 
