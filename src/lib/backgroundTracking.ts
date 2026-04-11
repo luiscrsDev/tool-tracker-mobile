@@ -56,27 +56,31 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }: TaskMan
   const { latitude, longitude, speed } = latest.coords
   const tools = await getPersistedTools()
 
+  console.log(`[BG] 📍 GPS callback → ${latitude.toFixed(5)}, ${longitude.toFixed(5)} | ${tools.length} tools`)
+
   if (tools.length === 0) return
 
   const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL
   const supabaseKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY
   if (!supabaseUrl || !supabaseKey) return
 
-  // Run a quick 5s BLE scan to detect nearby tags (refreshes bleLastSeen)
+  // Try quick BLE scan (may fail in background but worth trying)
   const taggedTools = tools.filter(t => t.tagId)
   if (taggedTools.length > 0) {
-    await quickBleScan()
+    try { await quickBleScan() } catch { /* BLE may not work in bg */ }
   }
 
-  // BLE-tagged tools: only process if BLE detected them recently (within 30 min).
-  // quickBleScan above refreshes timestamps, so tools nearby will always be valid.
+  // BLE-tagged tools: process if BLE detected them within last 60 min.
+  // This gives enough window for the GPS task (every 2 min) to track
+  // tools even after the BLE scan dies in background.
   const bleLastSeen = await getBleLastSeen()
-  const BLE_VALIDITY_MS = 30 * 60 * 1000 // 30 min
+  const BLE_VALIDITY_MS = 60 * 60 * 1000 // 60 min
   const now = Date.now()
   for (const tool of taggedTools) {
     const lastBle = bleLastSeen.get(tool.id) ?? 0
+    const minutesAgo = Math.round((now - lastBle) / 60000)
     if (now - lastBle > BLE_VALIDITY_MS) {
-      console.log(`[BG] ⏭️ ${tool.name} — BLE stale (${Math.round((now - lastBle) / 60000)}min ago)`)
+      console.log(`[BG] ⏭️ ${tool.name} — BLE stale (${minutesAgo}min ago)`)
       continue
     }
 
