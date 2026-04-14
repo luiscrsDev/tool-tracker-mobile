@@ -158,25 +158,28 @@ export async function startBackgroundTracking(): Promise<boolean> {
       return false
     }
 
-    // Start background location with foreground service
+    // Always stop and restart to ensure the callback is alive
+    // (hasStartedLocationUpdatesAsync can return true even when callback is dead)
     const isRunning = await Location.hasStartedLocationUpdatesAsync(BACKGROUND_LOCATION_TASK).catch(() => false)
-    console.log(`[BG] Location task already running: ${isRunning}`)
-    if (!isRunning) {
-      console.log('[BG] Starting location updates...')
-      await Location.startLocationUpdatesAsync(BACKGROUND_LOCATION_TASK, {
-        accuracy: Location.Accuracy.Balanced,
-        timeInterval: 2 * 60 * 1000,  // every 2 min
-        distanceInterval: 10,           // or 10m movement
-        showsBackgroundLocationIndicator: true,
-        foregroundService: {
-          notificationTitle: 'Locate Tool',
-          notificationBody: 'Rastreando ferramentas em segundo plano',
-          notificationColor: '#2563EB',
-        },
-        pausesUpdatesAutomatically: false,
-      })
-      console.log('[BG] ✅ Background location started')
+    if (isRunning) {
+      console.log('[BG] Stopping stale location task...')
+      await Location.stopLocationUpdatesAsync(BACKGROUND_LOCATION_TASK).catch(() => {})
     }
+
+    console.log('[BG] Starting location updates (fresh)...')
+    await Location.startLocationUpdatesAsync(BACKGROUND_LOCATION_TASK, {
+      accuracy: Location.Accuracy.Balanced,
+      timeInterval: 2 * 60 * 1000,  // every 2 min
+      distanceInterval: 10,           // or 10m movement
+      showsBackgroundLocationIndicator: true,
+      foregroundService: {
+        notificationTitle: 'Locate Tool',
+        notificationBody: 'Rastreando ferramentas em segundo plano',
+        notificationColor: '#2563EB',
+      },
+      pausesUpdatesAutomatically: false,
+    })
+    console.log('[BG] ✅ Background location started (fresh)')
 
     // Start BLE monitoring (runs alongside foreground service)
     if (!isMonitoring()) {
