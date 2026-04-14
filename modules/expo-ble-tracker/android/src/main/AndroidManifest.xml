@@ -1,0 +1,7 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+  <service
+    android:name="expo.modules.bletracker.BleTrackingService"
+    android:enabled="true"
+    android:exported="false"
+    android:foregroundServiceType="location" />
+</manifest>

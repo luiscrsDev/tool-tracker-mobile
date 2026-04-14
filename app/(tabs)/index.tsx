@@ -11,6 +11,7 @@ import { startBackgroundTracking } from '@/lib/backgroundTracking'
 import { addTrackerToMonitor } from '@/lib/bleMonitoring'
 import { supabase } from '@/lib/supabase'
 import { useSites } from '@/context/SitesContext'
+import * as BleTracker from '@/modules/expo-ble-tracker/src'
 
 type Movement = {
   id: string
@@ -111,22 +112,53 @@ export default function DashboardScreen() {
     }
   }, [contractor?.id])
 
-  // Auto-register tagged tools in BLE monitor
+  // Auto-register tagged tools in BLE monitor + native service
   useEffect(() => {
     if (tools.length === 0 || tags.length === 0) return
     let count = 0
+
+    // Configure native BLE tracker service
+    const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL
+    const supabaseKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY
+    if (supabaseUrl && supabaseKey) {
+      try {
+        BleTracker.configure(supabaseUrl, supabaseKey)
+        BleTracker.clearTags()
+      } catch (e) {
+        console.warn('[Dashboard] Native BLE tracker not available:', (e as Error)?.message)
+      }
+    }
+
     for (const tool of tools) {
       if (!tool.assigned_tag) continue
       const tag = getTagById(tool.assigned_tag)
       if (!tag) continue
+
+      // JS-level BLE monitor (works when app is open)
       addTrackerToMonitor(tag.tag_id, {
         toolId: tool.id,
         toolName: tool.name,
         contractorId: tool.contractor_id,
       })
+
+      // Native-level BLE tracker (works in background)
+      try {
+        BleTracker.addTag(tag.tag_id, tool.id, tool.name, tool.contractor_id)
+      } catch { /* native module not available */ }
+
       count++
     }
-    if (count > 0) console.log(`[Dashboard] Auto-registered ${count} tagged tools for BLE monitoring`)
+
+    // Start native service
+    if (count > 0) {
+      try {
+        BleTracker.startService()
+        console.log(`[Dashboard] Native BLE service started with ${count} tags`)
+      } catch (e) {
+        console.warn('[Dashboard] Native BLE service failed:', (e as Error)?.message)
+      }
+      console.log(`[Dashboard] Auto-registered ${count} tagged tools for BLE monitoring`)
+    }
   }, [tools, tags])
 
   const handleRefresh = async () => {
