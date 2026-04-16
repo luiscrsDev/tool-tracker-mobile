@@ -64,52 +64,9 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }: TaskMan
   const supabaseKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY
   if (!supabaseUrl || !supabaseKey) return
 
-  // Try quick BLE scan (may fail in background but worth trying)
-  const taggedTools = tools.filter(t => t.tagId)
-  if (taggedTools.length > 0) {
-    try { await quickBleScan() } catch { /* BLE may not work in bg */ }
-  }
-
-  // BLE-tagged tools: process if BLE detected them within last 60 min.
-  // This gives enough window for the GPS task (every 2 min) to track
-  // tools even after the BLE scan dies in background.
-  const bleLastSeen = await getBleLastSeen()
-  const BLE_VALIDITY_MS = 60 * 60 * 1000 // 60 min
-  const now = Date.now()
-  for (const tool of taggedTools) {
-    const lastBle = bleLastSeen.get(tool.id) ?? 0
-    const minutesAgo = Math.round((now - lastBle) / 60000)
-    if (now - lastBle > BLE_VALIDITY_MS) {
-      console.log(`[BG] ⏭️ ${tool.name} — BLE stale (${minutesAgo}min ago)`)
-      continue
-    }
-
-    try {
-      await fetch(`${supabaseUrl}/rest/v1/tools?id=eq.${tool.id}`, {
-        method: 'PATCH',
-        headers: {
-          apikey: supabaseKey,
-          Authorization: `Bearer ${supabaseKey}`,
-          'Content-Type': 'application/json',
-          Prefer: 'return=minimal',
-        },
-        body: JSON.stringify({
-          last_seen_location: {
-            latitude, longitude,
-            accuracy: latest.coords.accuracy,
-            timestamp: new Date(latest.timestamp).toISOString(),
-          },
-        }),
-      })
-
-      await processDetection(
-        tool.id, tool.contractorId,
-        latitude, longitude, speed,
-        null, taggedTools.map(t => t.id),
-      )
-      console.log(`[BG] ✅ ${tool.name} (BLE ${Math.round((now - lastBle) / 60000)}min ago) → ${latitude.toFixed(5)}, ${longitude.toFixed(5)}`)
-    } catch { /* silent */ }
-  }
+  // BLE-tagged tools: handled entirely by native BleTrackingService (Kotlin).
+  // Do NOT process them here to avoid duplicate records.
+  // The JS background task only handles GPS-only tools (no tag).
 
   // GPS-only tools: save location directly
   const gpsOnlyTools = tools.filter(t => !t.tagId)

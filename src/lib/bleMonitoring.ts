@@ -188,23 +188,15 @@ async function saveDetection(tagId: string, tool: MonitoredTool): Promise<void> 
     })
 
     lastSaved.set(tagId, Date.now())
-    // Persist BLE detection time so background GPS task knows this tool is nearby
+    // Persist BLE detection time for background GPS task
     bleLastSeen.set(tool.toolId, Date.now())
     persistBleLastSeen()
     console.log(`[BLE Monitor] ✅ ${tool.toolName} (${tagId}) → ${latitude.toFixed(5)}, ${longitude.toFixed(5)}`)
     onDetectionCallback?.({ toolId: tool.toolId, latitude, longitude, accuracy: accuracy ?? null, timestamp })
 
-    // Smart movement tracking — aplica as 3 regras
-    const detectedToolIds = Array.from(monitoredTrackers.values()).map(t => t.toolId)
-    processDetection(
-      tool.toolId,
-      tool.contractorId,
-      latitude,
-      longitude,
-      speed,        // metros/segundo do GPS
-      null,         // siteId resolvido depois
-      detectedToolIds,
-    ).catch(err => console.warn('[Movement] processDetection error:', err))
+    // NOTE: Movement tracking (processDetection) is handled by the native
+    // BleTrackingService in Kotlin. Do NOT call processDetection here to
+    // avoid duplicate records with wrong timestamps.
   } catch (err) {
     console.error(`[BLE Monitor] ❌ Erro ao salvar ${tool.toolId}:`, err)
   }
