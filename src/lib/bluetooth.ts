@@ -5,7 +5,7 @@ import CryptoJS from 'crypto-js'
 let bleManager: BleManager | null = null
 
 function getBleManager(): BleManager {
-  if (!bleManager) {
+  if (!bleManager || (bleManager as any)._destroyed) {
     try {
       console.log('🔧 Inicializando BleManager...')
       bleManager = new BleManager()
@@ -836,34 +836,64 @@ export const BLEService = {
     const ALERT_CHAR     = '00002a06-0000-1000-8000-00805f9b34fb'
     const HIGH_ALERT_B64 = 'Ag==' // 0x02 em base64
 
+    // Use a fresh BleManager to avoid "destroyed" issues from scan lifecycle
+    const mgr = new BleManager()
     try {
       console.log(`🔔 Conectando para beep: ${deviceId}`)
-      const device = await getBleManager().connectToDevice(deviceId, { timeout: 8000, refreshGatt: 'OnConnected' })
+      const device = await mgr.connectToDevice(deviceId, { timeout: 8000, refreshGatt: 'OnConnected' })
       await device.discoverAllServicesAndCharacteristics()
 
-      // Tenta sem resposta primeiro (mais rápido)
+      // Try Immediate Alert first
+      let beeped = false
       try {
-        await getBleManager().writeCharacteristicWithoutResponseForDevice(
+        await mgr.writeCharacteristicWithoutResponseForDevice(
           deviceId, ALERT_SERVICE, ALERT_CHAR, HIGH_ALERT_B64,
         )
+        beeped = true
       } catch {
-        // Fallback: com resposta
-        await getBleManager().writeCharacteristicWithResponseForDevice(
-          deviceId, ALERT_SERVICE, ALERT_CHAR, HIGH_ALERT_B64,
-        )
+        try {
+          await mgr.writeCharacteristicWithResponseForDevice(
+            deviceId, ALERT_SERVICE, ALERT_CHAR, HIGH_ALERT_B64,
+          )
+          beeped = true
+        } catch { /* no Immediate Alert */ }
       }
 
-      console.log(`✅ Beep enviado para ${deviceId}`)
+      // If no Immediate Alert, try FMDN ringing (0x1910 / 0x2B11)
+      if (!beeped) {
+        const FMDN_SVC = '00001910-0000-1000-8000-00805f9b34fb'
+        const RING_CHAR = '00002b11-0000-1000-8000-00805f9b34fb'
+        // Simple ring command: start ringing, 5 second timeout
+        const ringCmd = [0x01, 0x00, 0x32] // start, volume high, 5s timeout
+        const ringB64 = btoa(String.fromCharCode(...ringCmd))
+        try {
+          await mgr.writeCharacteristicWithResponseForDevice(deviceId, FMDN_SVC, RING_CHAR, ringB64)
+          beeped = true
+          console.log(`✅ FMDN ring sent to ${deviceId}`)
+        } catch {
+          // Try write without response
+          try {
+            await mgr.writeCharacteristicWithoutResponseForDevice(deviceId, FMDN_SVC, RING_CHAR, ringB64)
+            beeped = true
+            console.log(`✅ FMDN ring (no-resp) sent to ${deviceId}`)
+          } catch (e2) {
+            console.warn('[playSound] FMDN ring also failed:', (e2 as Error)?.message)
+          }
+        }
+      }
 
-      // Desconecta após 3 s (tempo do beep)
+      if (beeped) console.log(`✅ Beep enviado para ${deviceId}`)
+
       setTimeout(() => {
-        getBleManager().cancelDeviceConnection(deviceId).catch(() => {})
+        mgr.cancelDeviceConnection(deviceId).catch(() => {})
+        mgr.destroy()
       }, 3000)
 
-      return true
+      return beeped
     } catch (err) {
-      console.warn('[playSound] Tracker não suporta Immediate Alert:', (err as Error)?.message ?? err)
-      getBleManager().cancelDeviceConnection(deviceId).catch(() => {})
+      console.warn('[playSound] Beep failed:', (err as Error)?.message ?? err)
+      mgr.cancelDeviceConnection(deviceId).catch(() => {})
+      mgr.destroy()
       return false
     }
   },
