@@ -443,11 +443,17 @@ export default function AirTagScreen() {
                       const connectId = scannedDevice?.id ?? tag.tag_id
                       setBeepingId(tag.tag_id)
                       try {
-                        // Try standard Immediate Alert first, then Tuya protocol
+                        // Stop ALL BLE scans to avoid GATT conflict
+                        if (scanning) await stopScanning()
+                        const { stopBleMonitoring, startBleMonitoring } = require('@/lib/bleMonitoring')
+                        stopBleMonitoring()
+                        await new Promise(r => setTimeout(r, 500))
                         const ok = await playSound(connectId)
                         if (!ok) await playTuyaSound(connectId, tag.eik ?? undefined)
                       } catch { /* no beep support */ } finally {
                         setBeepingId(null)
+                        // Restart BLE monitoring
+                        try { const { startBleMonitoring } = require('@/lib/bleMonitoring'); startBleMonitoring() } catch {}
                       }
                     }}
                     disabled={beepingId === tag.tag_id}
