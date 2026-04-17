@@ -832,57 +832,58 @@ export const BLEService = {
 
   // Emitir beep via Immediate Alert Service (BLE padrão — 0x1802 / 0x2A06)
   async playSound(deviceId: string): Promise<boolean> {
-    const ALERT_SERVICE  = '00001802-0000-1000-8000-00805f9b34fb'
-    const ALERT_CHAR     = '00002a06-0000-1000-8000-00805f9b34fb'
-    const HIGH_ALERT_B64 = 'Ag==' // 0x02 em base64
-
-    // Use a fresh BleManager to avoid "destroyed" issues from scan lifecycle
+    // Use a fresh BleManager to avoid "destroyed" issues
     const mgr = new BleManager()
     try {
-      console.log(`🔔 Conectando para beep: ${deviceId}`)
-      const device = await mgr.connectToDevice(deviceId, { timeout: 8000, refreshGatt: 'OnConnected' })
+      console.log(`🔔 [Ring] Connecting to ${deviceId}...`)
+      const device = await mgr.connectToDevice(deviceId, { timeout: 10000, refreshGatt: 'OnConnected' })
       await device.discoverAllServicesAndCharacteristics()
 
-      // Try Immediate Alert first
+      // Discover all services and writable characteristics
+      const services = await device.services()
+      console.log(`🔔 [Ring] Services: ${services.map(s => s.uuid).join(', ')}`)
+
+      // Ring commands to try on each writable characteristic
+      const ringPayloads: { name: string; bytes: number[] }[] = [
+        { name: 'ImmediateAlert HIGH', bytes: [0x02] },
+        { name: 'ImmediateAlert MID', bytes: [0x01] },
+        { name: 'FMDN ring start', bytes: [0x01, 0x00, 0x32] },
+        { name: 'FMDN ring 0xFF', bytes: [0x01, 0xFF, 0x00, 0x32] },
+        { name: 'Ring byte 1', bytes: [0x01] },
+        { name: 'Ring byte FF', bytes: [0xFF] },
+        { name: 'Ring 01 01', bytes: [0x01, 0x01] },
+        { name: 'Ring 01 02', bytes: [0x01, 0x02] },
+      ]
+
       let beeped = false
-      try {
-        await mgr.writeCharacteristicWithoutResponseForDevice(
-          deviceId, ALERT_SERVICE, ALERT_CHAR, HIGH_ALERT_B64,
-        )
-        beeped = true
-      } catch {
-        try {
-          await mgr.writeCharacteristicWithResponseForDevice(
-            deviceId, ALERT_SERVICE, ALERT_CHAR, HIGH_ALERT_B64,
-          )
-          beeped = true
-        } catch { /* no Immediate Alert */ }
-      }
+      for (const svc of services) {
+        const chars = await svc.characteristics()
+        for (const char of chars) {
+          if (!char.isWritableWithResponse && !char.isWritableWithoutResponse) continue
+          console.log(`🔔 [Ring] Writable: svc=${svc.uuid.slice(4,8)} char=${char.uuid.slice(4,8)} (resp=${char.isWritableWithResponse} noresp=${char.isWritableWithoutResponse})`)
 
-      // If no Immediate Alert, try FMDN ringing (0x1910 / 0x2B11)
-      if (!beeped) {
-        const FMDN_SVC = '00001910-0000-1000-8000-00805f9b34fb'
-        const RING_CHAR = '00002b11-0000-1000-8000-00805f9b34fb'
-        // Simple ring command: start ringing, 5 second timeout
-        const ringCmd = [0x01, 0x00, 0x32] // start, volume high, 5s timeout
-        const ringB64 = btoa(String.fromCharCode(...ringCmd))
-        try {
-          await mgr.writeCharacteristicWithResponseForDevice(deviceId, FMDN_SVC, RING_CHAR, ringB64)
-          beeped = true
-          console.log(`✅ FMDN ring sent to ${deviceId}`)
-        } catch {
-          // Try write without response
-          try {
-            await mgr.writeCharacteristicWithoutResponseForDevice(deviceId, FMDN_SVC, RING_CHAR, ringB64)
-            beeped = true
-            console.log(`✅ FMDN ring (no-resp) sent to ${deviceId}`)
-          } catch (e2) {
-            console.warn('[playSound] FMDN ring also failed:', (e2 as Error)?.message)
+          for (const payload of ringPayloads) {
+            const b64 = btoa(String.fromCharCode(...payload.bytes))
+            try {
+              if (char.isWritableWithResponse) {
+                await mgr.writeCharacteristicWithResponseForDevice(deviceId, svc.uuid, char.uuid, b64)
+              } else {
+                await mgr.writeCharacteristicWithoutResponseForDevice(deviceId, svc.uuid, char.uuid, b64)
+              }
+              console.log(`✅ [Ring] WRITE OK: ${payload.name} → svc=${svc.uuid.slice(4,8)} char=${char.uuid.slice(4,8)}`)
+              beeped = true
+              // Wait 2s to hear if it rings
+              await new Promise(r => setTimeout(r, 2000))
+            } catch (e) {
+              // Write rejected, try next
+            }
           }
+          if (beeped) break
         }
+        if (beeped) break
       }
 
-      if (beeped) console.log(`✅ Beep enviado para ${deviceId}`)
+      if (!beeped) console.warn('🔔 [Ring] No writable characteristic accepted any ring command')
 
       setTimeout(() => {
         mgr.cancelDeviceConnection(deviceId).catch(() => {})
@@ -891,7 +892,7 @@ export const BLEService = {
 
       return beeped
     } catch (err) {
-      console.warn('[playSound] Beep failed:', (err as Error)?.message ?? err)
+      console.warn('[playSound] Connection failed:', (err as Error)?.message ?? err)
       mgr.cancelDeviceConnection(deviceId).catch(() => {})
       mgr.destroy()
       return false
