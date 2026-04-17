@@ -33,10 +33,78 @@ interface LocationRecord {
   created_at: string
 }
 
+// Component to link an available tag to a tool
+function LinkTagSection({ toolId }: { toolId: string }) {
+  const { tags } = useTags()
+  const { tools, linkTag } = useTools()
+  const [showDropdown, setShowDropdown] = useState(false)
+  const [linking, setLinking] = useState(false)
+
+  // Tags not linked to any tool
+  const linkedTagIds = new Set(tools.filter(t => t.assigned_tag).map(t => t.assigned_tag))
+  const availableTags = tags.filter(t => !linkedTagIds.has(t.id))
+
+  const handleLink = async (tagId: string) => {
+    setLinking(true)
+    try {
+      await linkTag(toolId, tagId)
+      setShowDropdown(false)
+    } catch {
+      Alert.alert('Erro', 'Falha ao vincular tag')
+    } finally {
+      setLinking(false)
+    }
+  }
+
+  if (availableTags.length === 0) {
+    return (
+      <View>
+        <Text style={{ fontSize: 13, color: '#CBD5E1' }}>Sem tracker vinculado</Text>
+        <TouchableOpacity
+          onPress={() => Alert.alert('Sem tags disponiveis', 'Pareia um tracker no AirTag Setup primeiro.')}
+          style={{ marginTop: 8, paddingVertical: 8, paddingHorizontal: 12, borderRadius: 8, backgroundColor: '#EFF6FF', borderWidth: 1, borderColor: '#BFDBFE', alignSelf: 'flex-start' }}
+        >
+          <Text style={{ fontSize: 12, color: '#2563EB', fontWeight: '600' }}>Vincular Tag</Text>
+        </TouchableOpacity>
+      </View>
+    )
+  }
+
+  return (
+    <View>
+      <Text style={{ fontSize: 13, color: '#CBD5E1', marginBottom: 8 }}>Sem tracker vinculado</Text>
+      <TouchableOpacity
+        onPress={() => setShowDropdown(!showDropdown)}
+        style={{ paddingVertical: 10, paddingHorizontal: 14, borderRadius: 8, backgroundColor: '#2563EB', alignSelf: 'flex-start' }}
+      >
+        <Text style={{ fontSize: 12, color: 'white', fontWeight: '700' }}>
+          {linking ? 'Vinculando...' : 'Vincular Tag'}
+        </Text>
+      </TouchableOpacity>
+      {showDropdown && (
+        <View style={{ marginTop: 8, backgroundColor: '#F8FAFC', borderRadius: 8, borderWidth: 1, borderColor: '#E2E8F0', overflow: 'hidden' }}>
+          {availableTags.map(tag => (
+            <TouchableOpacity
+              key={tag.id}
+              onPress={() => handleLink(tag.id)}
+              disabled={linking}
+              style={{ padding: 12, borderBottomWidth: 1, borderBottomColor: '#F1F5F9', flexDirection: 'row', alignItems: 'center', gap: 8 }}
+            >
+              <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: '#2563EB' }} />
+              <Text style={{ fontSize: 13, fontWeight: '600', color: '#0F172A' }}>{tag.name}</Text>
+              <Text style={{ fontSize: 11, color: '#94A3B8' }}>({tag.tag_id})</Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+      )}
+    </View>
+  )
+}
+
 export default function ToolDetailScreen() {
   const { toolId } = useLocalSearchParams<{ toolId: string }>()
   const router = useRouter()
-  const { tools, deleteTool, unlinkTag } = useTools()
+  const { tools, deleteTool, unlinkTag, linkTag } = useTools()
   const { getTagById } = useTags()
   const { resolveLocation, resolveLocationAsync } = useSites()
   const [resolvedAddresses, setResolvedAddresses] = useState<Map<string, string>>(new Map())
@@ -250,7 +318,7 @@ export default function ToolDetailScreen() {
                   </TouchableOpacity>
                 </View>
               ) : (
-                <Text style={{ fontSize: 13, color: '#CBD5E1' }}>Sem tracker vinculado</Text>
+                <LinkTagSection toolId={toolId!} />
               )}
             </View>
           </View>

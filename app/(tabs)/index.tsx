@@ -79,6 +79,10 @@ export default function DashboardScreen() {
       setMissingPermissions(missing)
     }
     checkPermissions()
+
+    // Re-check when app returns from settings
+    const interval = setInterval(checkPermissions, 5000)
+    return () => clearInterval(interval)
   }, [])
 
   const fetchRecentMovements = useCallback(async () => {

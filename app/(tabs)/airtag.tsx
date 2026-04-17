@@ -443,7 +443,9 @@ export default function AirTagScreen() {
                       const connectId = scannedDevice?.id ?? tag.tag_id
                       setBeepingId(tag.tag_id)
                       try {
-                        await playTuyaSound(connectId, tag.eik ?? undefined)
+                        // Try standard Immediate Alert first, then Tuya protocol
+                        const ok = await playSound(connectId)
+                        if (!ok) await playTuyaSound(connectId, tag.eik ?? undefined)
                       } catch { /* no beep support */ } finally {
                         setBeepingId(null)
                       }
