@@ -356,8 +356,17 @@ class BleTrackingService : Service() {
 
                     val lat = location.latitude
                     val lng = location.longitude
+                    val accuracy = location.accuracy.toDouble() // meters
                     val speed = location.speed.toDouble() * 3.6 // m/s → km/h
                     val detectedToolIds = mutableListOf<String>()
+
+                    Log.d(TAG, "GPS: (${"%.5f".format(lat)}, ${"%.5f".format(lng)}) acc=${accuracy.toInt()}m spd=${"%.0f".format(speed)}km/h")
+
+                    // Skip unreliable GPS — accuracy worse than 50m means indoor/bad signal
+                    if (accuracy > 50) {
+                        Log.d(TAG, "GPS accuracy too low (${accuracy.toInt()}m) — skipping")
+                        return@addOnSuccessListener
+                    }
 
                     for (tagId in currentScanDetections) {
                         val tag = trackedTags[tagId] ?: continue
@@ -376,8 +385,11 @@ class BleTrackingService : Service() {
                         val dist = haversine(lat, lng, last.lat, last.lng)
                         val timeSince = now - last.timestamp
 
-                        // Movement: >15m, <10km/h
-                        if (dist > MIN_DISTANCE_M && speed < 10) {
+                        // Movement must exceed GPS accuracy to be real
+                        val effectiveThreshold = maxOf(MIN_DISTANCE_M, accuracy * 2)
+
+                        // Movement: distance > threshold, <10km/h
+                        if (dist > effectiveThreshold && speed < 10) {
                             saveMovement(tag, "movement", lat, lng, speed)
                             lastPositions[tag.toolId] = LastPosition(lat, lng, "movement", now)
                             continue
@@ -390,8 +402,8 @@ class BleTrackingService : Service() {
                             continue
                         }
 
-                        // Stop: >4min stationary, last != stop OR moved >15m from last stop
-                        if (timeSince > STOP_TIMEOUT_MS && dist < MIN_DISTANCE_M) {
+                        // Stop: >4min stationary within threshold
+                        if (timeSince > STOP_TIMEOUT_MS && dist < effectiveThreshold) {
                             if (last.event != "stop") {
                                 saveMovement(tag, "stop", lat, lng, 0.0)
                                 lastPositions[tag.toolId] = LastPosition(lat, lng, "stop", now)
