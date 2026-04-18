@@ -832,12 +832,6 @@ export const BLEService = {
 
   // Emitir beep via Immediate Alert Service (BLE padrão — 0x1802 / 0x2A06)
   async playSound(deviceId: string): Promise<boolean> {
-    // MokoSmart M1P protocol (BXP-S firmware)
-    // Service: 0000AA00, Params char: 0000AA01, Password char: 0000AA04
-    const MOKO_SVC = '0000aa00-0000-1000-8000-00805f9b34fb'
-    const MOKO_PARAMS = '0000aa01-0000-1000-8000-00805f9b34fb'
-    const MOKO_PASSWORD = '0000aa04-0000-1000-8000-00805f9b34fb'
-
     const mgr = new BleManager()
     try {
       console.log(`🔔 [Ring] Connecting to ${deviceId}...`)
@@ -848,66 +842,100 @@ export const BLEService = {
       const svcUuids = services.map(s => s.uuid.toLowerCase())
       console.log(`🔔 [Ring] Services: ${svcUuids.join(', ')}`)
 
-      const hasMoko = svcUuids.some(u => u.includes('aa00'))
-
-      if (hasMoko) {
-        // MokoSmart M1P — use their protocol
-        // Try password first (default: moko4321)
-        try {
-          const pwBytes = [0xEA, 0x01, 0x51, 0x08]
-          const pw = 'moko4321'
-          for (let i = 0; i < pw.length; i++) pwBytes.push(pw.charCodeAt(i))
-          const pwB64 = btoa(String.fromCharCode(...pwBytes))
-          await mgr.writeCharacteristicWithResponseForDevice(deviceId, MOKO_SVC, MOKO_PASSWORD, pwB64)
-          console.log('🔔 [Ring] Password sent')
-          await new Promise(r => setTimeout(r, 500))
-        } catch (e) {
-          console.warn('🔔 [Ring] Password write failed (may not be required):', (e as Error)?.message)
+      // List ALL characteristics for diagnostics
+      for (const svc of services) {
+        const chars = await svc.characteristics()
+        for (const c of chars) {
+          console.log(`🔔 [Ring] char: svc=${svc.uuid.slice(4,8)} uuid=${c.uuid.slice(4,8)} read=${c.isReadable} writeR=${c.isWritableWithResponse} writeNR=${c.isWritableWithoutResponse} notify=${c.isNotifiable}`)
         }
-
-        // LED Remote Reminder: 0xEA 0x01 0x61 0x05 0x03 interval(2) time(2)
-        // interval=500ms (0x01F4), time=30 (=3 seconds, 0x001E)
-        const ledCmd = [0xEA, 0x01, 0x61, 0x05, 0x03, 0x01, 0xF4, 0x00, 0x1E]
-        const ledB64 = btoa(String.fromCharCode(...ledCmd))
-        try {
-          await mgr.writeCharacteristicWithResponseForDevice(deviceId, MOKO_SVC, MOKO_PARAMS, ledB64)
-          console.log('✅ [Ring] LED reminder sent!')
-        } catch (e) {
-          console.warn('🔔 [Ring] LED write failed:', (e as Error)?.message)
-        }
-
-        // Buzzer Remote Reminder: 0xEA 0x01 0x62 0x05 0x0E interval(2) time(2)
-        // interval=500ms (0x01F4), time=30 (=3 seconds, 0x001E)
-        const buzzerCmd = [0xEA, 0x01, 0x62, 0x05, 0x0E, 0x01, 0xF4, 0x00, 0x1E]
-        const buzzerB64 = btoa(String.fromCharCode(...buzzerCmd))
-        try {
-          await mgr.writeCharacteristicWithResponseForDevice(deviceId, MOKO_SVC, MOKO_PARAMS, buzzerB64)
-          console.log('✅ [Ring] Buzzer reminder sent!')
-        } catch (e) {
-          console.warn('🔔 [Ring] Buzzer write failed:', (e as Error)?.message)
-        }
-
-        setTimeout(() => {
-          mgr.cancelDeviceConnection(deviceId).catch(() => {})
-          mgr.destroy()
-        }, 5000)
-        return true
       }
 
-      // Fallback: Immediate Alert (0x1802) for other trackers
-      const ALERT_SVC = '00001802-0000-1000-8000-00805f9b34fb'
-      const ALERT_CHAR = '00002a06-0000-1000-8000-00805f9b34fb'
-      try {
-        await mgr.writeCharacteristicWithoutResponseForDevice(deviceId, ALERT_SVC, ALERT_CHAR, 'Ag==')
-        console.log('✅ [Ring] Immediate Alert sent')
-        setTimeout(() => { mgr.cancelDeviceConnection(deviceId).catch(() => {}); mgr.destroy() }, 3000)
-        return true
-      } catch {
-        console.warn('🔔 [Ring] No supported ring protocol found')
+      // Strategy: try password on EVERY writable characteristic, then try ring commands
+      const password = 'Moko4321'
+      const pwPayloads = [
+        // BXP-S protocol: 0xEA 0x01 0x51 (KEY_PASSWORD) 0x08 + password bytes
+        [0xEA, 0x01, 0x51, 0x08, ...Array.from(password).map(c => c.charCodeAt(0))],
+        // Plain password bytes
+        Array.from(password).map(c => c.charCodeAt(0)),
+      ]
+
+      const ledCmd = [0xEA, 0x01, 0x61, 0x05, 0x03, 0x01, 0xF4, 0x00, 0x1E]
+      const buzzerCmd = [0xEA, 0x01, 0x62, 0x05, 0x0E, 0x01, 0xF4, 0x00, 0x1E]
+
+      let authenticated = false
+      let beeped = false
+
+      for (const svc of services) {
+        const chars = await svc.characteristics()
+        for (const char of chars) {
+          if (!char.isWritableWithResponse && !char.isWritableWithoutResponse) continue
+
+          // Try password first
+          if (!authenticated) {
+            for (const pw of pwPayloads) {
+              const b64 = btoa(String.fromCharCode(...pw))
+              try {
+                if (char.isWritableWithResponse) {
+                  await mgr.writeCharacteristicWithResponseForDevice(deviceId, svc.uuid, char.uuid, b64)
+                } else {
+                  await mgr.writeCharacteristicWithoutResponseForDevice(deviceId, svc.uuid, char.uuid, b64)
+                }
+                console.log(`✅ [Ring] Password accepted on svc=${svc.uuid.slice(4,8)} char=${char.uuid.slice(4,8)}`)
+                authenticated = true
+                await new Promise(r => setTimeout(r, 500))
+
+                // Re-discover after auth (new services may appear)
+                try {
+                  await device.discoverAllServicesAndCharacteristics()
+                  const newSvcs = await device.services()
+                  const newUuids = newSvcs.map(s => s.uuid.toLowerCase())
+                  if (newUuids.length > svcUuids.length) {
+                    console.log(`🔔 [Ring] New services after auth: ${newUuids.join(', ')}`)
+                  }
+                } catch { /* ignore */ }
+                break
+              } catch { /* password rejected on this char */ }
+            }
+          }
+
+          // Try LED command
+          if (!beeped) {
+            const ledB64 = btoa(String.fromCharCode(...ledCmd))
+            try {
+              if (char.isWritableWithResponse) {
+                await mgr.writeCharacteristicWithResponseForDevice(deviceId, svc.uuid, char.uuid, ledB64)
+              } else {
+                await mgr.writeCharacteristicWithoutResponseForDevice(deviceId, svc.uuid, char.uuid, ledB64)
+              }
+              console.log(`✅ [Ring] LED cmd accepted on svc=${svc.uuid.slice(4,8)} char=${char.uuid.slice(4,8)}`)
+              beeped = true
+              await new Promise(r => setTimeout(r, 1000))
+            } catch { /* rejected */ }
+          }
+
+          // Try buzzer command
+          if (!beeped) {
+            const buzzerB64 = btoa(String.fromCharCode(...buzzerCmd))
+            try {
+              if (char.isWritableWithResponse) {
+                await mgr.writeCharacteristicWithResponseForDevice(deviceId, svc.uuid, char.uuid, buzzerB64)
+              } else {
+                await mgr.writeCharacteristicWithoutResponseForDevice(deviceId, svc.uuid, char.uuid, buzzerB64)
+              }
+              console.log(`✅ [Ring] Buzzer cmd accepted on svc=${svc.uuid.slice(4,8)} char=${char.uuid.slice(4,8)}`)
+              beeped = true
+            } catch { /* rejected */ }
+          }
+        }
+      }
+
+      if (!beeped) console.warn('🔔 [Ring] No command accepted')
+
+      setTimeout(() => {
         mgr.cancelDeviceConnection(deviceId).catch(() => {})
         mgr.destroy()
-        return false
-      }
+      }, 5000)
+      return beeped
     } catch (err) {
       console.warn('[playSound] Connection failed:', (err as Error)?.message ?? err)
       mgr.cancelDeviceConnection(deviceId).catch(() => {})
