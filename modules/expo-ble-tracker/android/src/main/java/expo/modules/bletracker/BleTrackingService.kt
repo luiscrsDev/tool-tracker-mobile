@@ -45,6 +45,10 @@ class BleTrackingService : Service() {
         private const val MIN_DISTANCE_M = 15.0               // movement threshold
         private const val STOP_TIMEOUT_MS = 4 * 60 * 1000L    // 4 min stop detection
 
+        // Controlled by ExpoBleTrackerModule to pause scans during GATT operations
+        @Volatile var pauseScanning = false
+        @Volatile var lastScanTimestamp = 0L
+
         // Shared prefs keys
         private const val PREFS_NAME = "ble_tracker_prefs"
         private const val KEY_TRACKED_TAGS = "tracked_tags"      // JSON: {tagId: {toolId, toolName, contractorId}}
@@ -269,11 +273,16 @@ class BleTrackingService : Service() {
     }
 
     private fun performScanCycle() {
+        if (pauseScanning) {
+            Log.d(TAG, "Scan paused (GATT operation in progress)")
+            return
+        }
         if (scanner == null) {
             initBleScanner()
             if (scanner == null) return
         }
         if (trackedTags.isEmpty()) return
+        lastScanTimestamp = System.currentTimeMillis()
 
         currentScanDetections.clear()
 
