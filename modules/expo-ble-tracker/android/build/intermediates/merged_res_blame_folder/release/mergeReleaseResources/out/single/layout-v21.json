@@ -1,0 +1,18 @@
+[
+    {
+        "merged": "expo.modules.bletracker.expo-ble-tracker-release-30:/layout-v21/notification_template_icon_group.xml",
+        "source": "expo.modules.bletracker.expo-ble-tracker-core-1.13.1-6:/layout-v21/notification_template_icon_group.xml"
+    },
+    {
+        "merged": "expo.modules.bletracker.expo-ble-tracker-release-30:/layout-v21/notification_template_custom_big.xml",
+        "source": "expo.modules.bletracker.expo-ble-tracker-core-1.13.1-6:/layout-v21/notification_template_custom_big.xml"
+    },
+    {
+        "merged": "expo.modules.bletracker.expo-ble-tracker-release-30:/layout-v21/notification_action.xml",
+        "source": "expo.modules.bletracker.expo-ble-tracker-core-1.13.1-6:/layout-v21/notification_action.xml"
+    },
+    {
+        "merged": "expo.modules.bletracker.expo-ble-tracker-release-30:/layout-v21/notification_action_tombstone.xml",
+        "source": "expo.modules.bletracker.expo-ble-tracker-core-1.13.1-6:/layout-v21/notification_action_tombstone.xml"
+    }
+]

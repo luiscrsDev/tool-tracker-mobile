@@ -1,0 +1,21 @@
+1<?xml version="1.0" encoding="utf-8"?>
+2<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+3    package="expo.modules.bletracker" >
+4
+5    <uses-sdk android:minSdkVersion="24" />
+6
+7    <application>
+7-->/Users/luisclaudiosantos/dev/tool-tracker-mobile/modules/expo-ble-tracker/android/src/main/AndroidManifest.xml:2:3-8:17
+8        <service
+8-->/Users/luisclaudiosantos/dev/tool-tracker-mobile/modules/expo-ble-tracker/android/src/main/AndroidManifest.xml:3:5-7:50
+9            android:name="expo.modules.bletracker.BleTrackingService"
+9-->/Users/luisclaudiosantos/dev/tool-tracker-mobile/modules/expo-ble-tracker/android/src/main/AndroidManifest.xml:4:7-64
+10            android:enabled="true"
+10-->/Users/luisclaudiosantos/dev/tool-tracker-mobile/modules/expo-ble-tracker/android/src/main/AndroidManifest.xml:5:7-29
+11            android:exported="false"
+11-->/Users/luisclaudiosantos/dev/tool-tracker-mobile/modules/expo-ble-tracker/android/src/main/AndroidManifest.xml:6:7-31
+12            android:foregroundServiceType="location" />
+12-->/Users/luisclaudiosantos/dev/tool-tracker-mobile/modules/expo-ble-tracker/android/src/main/AndroidManifest.xml:7:7-47
+13    </application>
+14
+15</manifest>

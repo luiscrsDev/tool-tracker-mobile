@@ -1,0 +1,36 @@
+{
+    "logs": [
+        {
+            "outputFile": "expo.modules.bletracker.expo-ble-tracker-release-30:/values-watch-v21/values-watch-v21.xml",
+            "map": [
+                {
+                    "source": "/Users/luisclaudiosantos/.gradle/caches/8.14.3/transforms/6be2d0d62bfa3dee32259f312e3ac2b1/transformed/appcompat-1.7.0/res/values-watch-v21/values-watch-v21.xml",
+                    "from": {
+                        "startLines": "2,6,10",
+                        "startColumns": "4,4,4",
+                        "startOffsets": "55,271,499",
+                        "endLines": "5,9,13",
+                        "endColumns": "12,12,12",
+                        "endOffsets": "266,494,724"
+                    }
+                }
+            ]
+        },
+        {
+            "outputFile": "expo.modules.bletracker.expo-ble-tracker-mergeReleaseResources-28:/values-watch-v21/values-watch-v21.xml",
+            "map": [
+                {
+                    "source": "/Users/luisclaudiosantos/.gradle/caches/8.14.3/transforms/6be2d0d62bfa3dee32259f312e3ac2b1/transformed/appcompat-1.7.0/res/values-watch-v21/values-watch-v21.xml",
+                    "from": {
+                        "startLines": "2,6,10",
+                        "startColumns": "4,4,4",
+                        "startOffsets": "55,271,499",
+                        "endLines": "5,9,13",
+                        "endColumns": "12,12,12",
+                        "endOffsets": "266,494,724"
+                    }
+                }
+            ]
+        }
+    ]
+}

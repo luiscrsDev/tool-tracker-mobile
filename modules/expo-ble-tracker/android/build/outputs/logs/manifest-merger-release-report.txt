@@ -1,0 +1,28 @@
+-- Merging decision tree log ---
+manifest
+ADDED from /Users/luisclaudiosantos/dev/tool-tracker-mobile/modules/expo-ble-tracker/android/src/main/AndroidManifest.xml:1:1-9:12
+INJECTED from /Users/luisclaudiosantos/dev/tool-tracker-mobile/modules/expo-ble-tracker/android/src/main/AndroidManifest.xml:1:1-9:12
+	package
+		INJECTED from /Users/luisclaudiosantos/dev/tool-tracker-mobile/modules/expo-ble-tracker/android/src/main/AndroidManifest.xml
+	xmlns:android
+		ADDED from /Users/luisclaudiosantos/dev/tool-tracker-mobile/modules/expo-ble-tracker/android/src/main/AndroidManifest.xml:1:11-69
+application
+ADDED from /Users/luisclaudiosantos/dev/tool-tracker-mobile/modules/expo-ble-tracker/android/src/main/AndroidManifest.xml:2:3-8:17
+service#expo.modules.bletracker.BleTrackingService
+ADDED from /Users/luisclaudiosantos/dev/tool-tracker-mobile/modules/expo-ble-tracker/android/src/main/AndroidManifest.xml:3:5-7:50
+	android:enabled
+		ADDED from /Users/luisclaudiosantos/dev/tool-tracker-mobile/modules/expo-ble-tracker/android/src/main/AndroidManifest.xml:5:7-29
+	android:exported
+		ADDED from /Users/luisclaudiosantos/dev/tool-tracker-mobile/modules/expo-ble-tracker/android/src/main/AndroidManifest.xml:6:7-31
+	android:foregroundServiceType
+		ADDED from /Users/luisclaudiosantos/dev/tool-tracker-mobile/modules/expo-ble-tracker/android/src/main/AndroidManifest.xml:7:7-47
+	android:name
+		ADDED from /Users/luisclaudiosantos/dev/tool-tracker-mobile/modules/expo-ble-tracker/android/src/main/AndroidManifest.xml:4:7-64
+uses-sdk
+INJECTED from /Users/luisclaudiosantos/dev/tool-tracker-mobile/modules/expo-ble-tracker/android/src/main/AndroidManifest.xml reason: use-sdk injection requested
+INJECTED from /Users/luisclaudiosantos/dev/tool-tracker-mobile/modules/expo-ble-tracker/android/src/main/AndroidManifest.xml
+INJECTED from /Users/luisclaudiosantos/dev/tool-tracker-mobile/modules/expo-ble-tracker/android/src/main/AndroidManifest.xml
+	android:targetSdkVersion
+		INJECTED from /Users/luisclaudiosantos/dev/tool-tracker-mobile/modules/expo-ble-tracker/android/src/main/AndroidManifest.xml
+	android:minSdkVersion
+		INJECTED from /Users/luisclaudiosantos/dev/tool-tracker-mobile/modules/expo-ble-tracker/android/src/main/AndroidManifest.xml

@@ -22,6 +22,7 @@ import com.google.android.gms.location.FusedLocationProviderClient
 import com.google.android.gms.location.LocationServices
 import com.google.android.gms.location.Priority
 import com.google.android.gms.tasks.CancellationTokenSource
+import android.os.PowerManager
 import java.net.HttpURLConnection
 import java.net.URL
 import org.json.JSONObject
@@ -56,6 +57,7 @@ class BleTrackingService : Service() {
     private var fusedLocation: FusedLocationProviderClient? = null
     private val handler = Handler(Looper.getMainLooper())
     private var isScanning = false
+    private var wakeLock: PowerManager.WakeLock? = null
 
     // Tag registry: BLE MAC/ID → tool info
     data class TrackedTag(val toolId: String, val toolName: String, val contractorId: String)
@@ -78,11 +80,25 @@ class BleTrackingService : Service() {
         super.onCreate()
         Log.i(TAG, "Service created")
 
+        // Acquire partial wake lock to keep CPU alive for BLE scans
+        val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+        wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "BleTracker::ScanWakeLock").apply {
+            setReferenceCounted(false)
+            acquire()
+        }
+        Log.i(TAG, "WakeLock acquired")
+
         createNotificationChannel()
         val notification = buildNotification("Iniciando rastreamento...")
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION)
+            try {
+                startForeground(NOTIFICATION_ID, notification,
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION or 0x00000010 /* CONNECTED_DEVICE */)
+            } catch (e: Exception) {
+                // Fallback for older Android
+                startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION)
+            }
         } else {
             startForeground(NOTIFICATION_ID, notification)
         }
@@ -106,7 +122,16 @@ class BleTrackingService : Service() {
         handler.removeCallbacksAndMessages(null)
         stopBleScan()
         saveLastPositions()
+        wakeLock?.release()
         Log.i(TAG, "Service destroyed")
+
+        // Self-restart: if service is killed, reschedule via alarm
+        val restartIntent = Intent(this, BleTrackingService::class.java)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startForegroundService(restartIntent)
+        } else {
+            startService(restartIntent)
+        }
     }
 
     // ─── Notification ──────────────────────────────────────────────────────
@@ -116,10 +141,11 @@ class BleTrackingService : Service() {
             val channel = NotificationChannel(
                 CHANNEL_ID,
                 "Tool Tracking",
-                NotificationManager.IMPORTANCE_LOW
+                NotificationManager.IMPORTANCE_DEFAULT
             ).apply {
                 description = "Rastreamento de ferramentas em segundo plano"
                 setShowBadge(false)
+                setSound(null, null)  // No sound but keep importance for survival
             }
             val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
             nm.createNotificationChannel(channel)
