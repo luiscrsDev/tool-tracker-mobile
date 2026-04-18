@@ -150,7 +150,13 @@ async function saveDetection(tagId: string, tool: MonitoredTool): Promise<void> 
     const { latitude, longitude, accuracy, altitude, heading, speed } = pos.coords
     const timestamp = new Date(pos.timestamp).toISOString()
 
-    // Update last_seen_location
+    // Skip unreliable GPS (accuracy > 50m = indoor/bad signal)
+    if (accuracy && accuracy > 50) {
+      console.log(`[BLE Monitor] GPS accuracy too low (${accuracy.toFixed(0)}m) — skipping save`)
+      return
+    }
+
+    // Update last_seen_location (only with good GPS)
     await fetch(`${supabaseUrl}/rest/v1/tools?id=eq.${tool.toolId}`, {
       method: 'PATCH',
       headers: {
