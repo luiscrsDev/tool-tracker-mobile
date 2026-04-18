@@ -318,7 +318,12 @@ class BleTrackingService : Service() {
 
     private val scanCallback = object : ScanCallback() {
         override fun onScanResult(callbackType: Int, result: ScanResult) {
-            val deviceId = result.device.address
+            val deviceId = try { result.device.address } catch (e: SecurityException) { return }
+            val name = try { result.device.name } catch (e: SecurityException) { null }
+            // Log all E4:06:BF devices for diagnostics
+            if (deviceId.startsWith("E4:06:BF")) {
+                Log.d(TAG, "Saw M1P: $deviceId ($name) rssi=${result.rssi}")
+            }
             // Direct MAC match
             if (trackedTags.containsKey(deviceId)) {
                 currentScanDetections.add(deviceId)
