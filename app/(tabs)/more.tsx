@@ -25,6 +25,13 @@ const menuItems = [
     color: '#F97316',
   },
   {
+    icon: '📓',
+    label: 'Diario',
+    desc: 'Registre paradas e saidas',
+    path: '/(tabs)/diary',
+    color: '#10B981',
+  },
+  {
     icon: '⚙️',
     label: 'Configurações',
     desc: 'Alertas, range e conta',
