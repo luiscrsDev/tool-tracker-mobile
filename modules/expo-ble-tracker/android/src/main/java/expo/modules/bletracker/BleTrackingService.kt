@@ -75,6 +75,10 @@ class BleTrackingService : Service() {
     data class LastPosition(val lat: Double, val lng: Double, val event: String, val timestamp: Long)
     private val lastPositions = mutableMapOf<String, LastPosition>()
 
+    // Track last SAVED position (for movement engine) vs last DETECTED position (for GPS averaging)
+    data class DetectionHistory(val lat: Double, val lng: Double, val timestamp: Long, val speed: Double)
+    private val recentDetections = mutableMapOf<String, MutableList<DetectionHistory>>() // toolId → last N detections
+
     private var supabaseUrl: String = ""
     private var supabaseKey: String = ""
 
@@ -265,43 +269,78 @@ class BleTrackingService : Service() {
                         val last = lastPositions[tag.toolId]
                         val now = System.currentTimeMillis()
 
+                        // Add to detection history (keep last 5)
+                        val history = recentDetections.getOrPut(tag.toolId) { mutableListOf() }
+                        history.add(DetectionHistory(lat, lng, now, speed))
+                        if (history.size > 5) history.removeAt(0)
+
+                        // First detection — save position, no record
                         if (last == null) {
                             lastPositions[tag.toolId] = LastPosition(lat, lng, "detected", now)
                             Log.i(TAG, "First detection: ${tag.toolName}")
                             continue
                         }
 
-                        val dist = haversine(lat, lng, last.lat, last.lng)
-                        val timeSince = now - last.timestamp
+                        // Calculate average position from recent detections (reduces GPS drift)
+                        val avgLat = history.map { it.lat }.average()
+                        val avgLng = history.map { it.lng }.average()
+                        val maxSpeed = history.maxOf { it.speed }
+
+                        val distFromLast = haversine(avgLat, avgLng, last.lat, last.lng)
+                        val timeSinceLast = now - last.timestamp
                         val effectiveThreshold = maxOf(MIN_DISTANCE_M, accuracy * 2)
 
-                        // Movement
-                        if (dist > effectiveThreshold && speed < 10) {
-                            saveMovement(tag, "movement", lat, lng, speed)
-                            lastPositions[tag.toolId] = LastPosition(lat, lng, "movement", now)
-                            continue
-                        }
+                        // Need at least 2 detections before making decisions (avoids single GPS spike)
+                        if (history.size < 2) continue
 
-                        // Speed
-                        if (speed >= 10 && timeSince > 2 * 60 * 1000 && last.event != "speed") {
-                            saveMovement(tag, "speed", lat, lng, speed)
+                        // SPEED: any detection >10km/h, >2min since last, last != speed
+                        if (maxSpeed >= 10 && timeSinceLast > 2 * 60 * 1000 && last.event != "speed") {
+                            saveMovement(tag, "speed", lat, lng, maxSpeed)
                             lastPositions[tag.toolId] = LastPosition(lat, lng, "speed", now)
+                            history.clear()
                             continue
                         }
 
-                        // Stop
-                        if (timeSince > STOP_TIMEOUT_MS && dist < effectiveThreshold) {
-                            if (last.event != "stop") {
-                                saveMovement(tag, "stop", lat, lng, 0.0)
-                                lastPositions[tag.toolId] = LastPosition(lat, lng, "stop", now)
+                        // MOVEMENT: average position moved >threshold, speed <10
+                        if (distFromLast > effectiveThreshold && maxSpeed < 10) {
+                            // Confirm movement is consistent — check spread of recent detections
+                            val spread = if (history.size >= 2) {
+                                val first = history.first()
+                                val last2 = history.last()
+                                haversine(first.lat, first.lng, last2.lat, last2.lng)
+                            } else 0.0
+
+                            // If detections are clustered (spread < threshold) but far from last saved = real movement
+                            // If detections are scattered (spread > threshold) = GPS noise, skip
+                            if (spread < effectiveThreshold * 3) {
+                                saveMovement(tag, "movement", avgLat, avgLng, speed)
+                                lastPositions[tag.toolId] = LastPosition(avgLat, avgLng, "movement", now)
+                                history.clear()
                             }
                             continue
                         }
 
-                        // Heartbeat
-                        if (timeSince > 60 * 60 * 1000) {
-                            saveMovement(tag, "stop", lat, lng, 0.0)
-                            lastPositions[tag.toolId] = LastPosition(lat, lng, "stop", now)
+                        // STOP: >4min stationary within threshold, last event != stop
+                        if (timeSinceLast > STOP_TIMEOUT_MS && distFromLast < effectiveThreshold && last.event != "stop") {
+                            saveMovement(tag, "stop", avgLat, avgLng, 0.0)
+                            lastPositions[tag.toolId] = LastPosition(avgLat, avgLng, "stop", now)
+                            history.clear()
+                            continue
+                        }
+
+                        // STOP: >4min, was moving, now stationary = register stop
+                        if (timeSinceLast > STOP_TIMEOUT_MS && last.event == "movement" || last.event == "speed") {
+                            saveMovement(tag, "stop", avgLat, avgLng, 0.0)
+                            lastPositions[tag.toolId] = LastPosition(avgLat, avgLng, "stop", now)
+                            history.clear()
+                            continue
+                        }
+
+                        // HEARTBEAT: >1h since last save
+                        if (timeSinceLast > 60 * 60 * 1000) {
+                            saveMovement(tag, "stop", avgLat, avgLng, 0.0)
+                            lastPositions[tag.toolId] = LastPosition(avgLat, avgLng, "stop", now)
+                            history.clear()
                         }
                     }
 
