@@ -85,7 +85,6 @@ export default function DiaryScreen() {
     departed: { icon: 'car', label: 'Saiu', color: '#2563EB' },
     arrived: { icon: 'location', label: 'Chegou', color: '#10B981' },
     stopped: { icon: 'pause-circle', label: 'Parou', color: '#F59E0B' },
-    resumed: { icon: 'play-circle', label: 'Retomou', color: '#8B5CF6' },
   }
 
   return (
@@ -138,19 +137,6 @@ export default function DiaryScreen() {
         >
           <Ionicons name="location" size={20} color="white" />
           <Text style={{ color: 'white', fontWeight: '700', fontSize: 15 }}>Cheguei</Text>
-        </TouchableOpacity>
-
-        <TouchableOpacity
-          onPress={() => addEntry('resumed')}
-          disabled={saving}
-          style={{
-            flex: 1, paddingVertical: 16, borderRadius: 12,
-            backgroundColor: '#8B5CF6', alignItems: 'center',
-            opacity: saving ? 0.5 : 1, flexDirection: 'row', justifyContent: 'center', gap: 8,
-          }}
-        >
-          <Ionicons name="play-circle" size={20} color="white" />
-          <Text style={{ color: 'white', fontWeight: '700', fontSize: 15 }}>Retomei</Text>
         </TouchableOpacity>
       </View>
 
