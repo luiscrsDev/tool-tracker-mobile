@@ -177,14 +177,9 @@ class ExpoBleTrackerModule : Module() {
                 val client = MokoGattClient(ctx)
                 success = try {
                     runBlocking {
-                        client.connectAndAuth(deviceId)
-                        when (command) {
-                            "led" -> { client.blinkLed(); true }
-                            "buzzer" -> { client.buzz(); true }
-                            "both" -> { client.blinkLed(); client.buzz(); true }
-                            else -> false
-                        }
+                        client.connectAndRing(deviceId, command)
                     }
+                    true
                 } catch (e: Exception) {
                     Log.w(TAG, "Ring failed: ${e.message}")
                     false
