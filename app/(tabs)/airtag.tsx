@@ -443,21 +443,12 @@ export default function AirTagScreen() {
                       const connectId = scannedDevice?.id ?? tag.tag_id
                       setBeepingId(tag.tag_id)
                       try {
-                        // Stop ALL BLE scans — JS, native service, and UI scan
-                        if (scanning) await stopScanning()
-                        const { stopBleMonitoring, startBleMonitoring, destroyBleMonitor } = require('@/lib/bleMonitoring')
-                        stopBleMonitoring()
-                        // Stop native Kotlin service temporarily
-                        try { const BleTracker = require('@/modules/expo-ble-tracker/src'); BleTracker.stopService() } catch {}
-                        // Wait for all scans to fully stop
-                        await new Promise(r => setTimeout(r, 1500))
-                        const ok = await playSound(connectId)
-                        if (!ok) await playTuyaSound(connectId, tag.eik ?? undefined)
-                      } catch { /* no beep support */ } finally {
+                        const BleTracker = require('@/modules/expo-ble-tracker/src')
+                        await BleTracker.ringTag(connectId, 'both')
+                      } catch (e) {
+                        console.warn('Ring failed:', (e as Error)?.message)
+                      } finally {
                         setBeepingId(null)
-                        // Restart BLE monitoring + native service
-                        try { const { startBleMonitoring } = require('@/lib/bleMonitoring'); startBleMonitoring() } catch {}
-                        try { const BleTracker = require('@/modules/expo-ble-tracker/src'); BleTracker.startService() } catch {}
                       }
                     }}
                     disabled={beepingId === tag.tag_id}
