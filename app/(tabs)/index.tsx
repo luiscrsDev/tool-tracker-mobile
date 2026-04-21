@@ -86,9 +86,12 @@ export default function DashboardScreen() {
   }, [])
 
   const fetchRecentMovements = useCallback(async () => {
+    const cid = contractor?.id
+    if (!cid) return
     const { data } = await supabase
       .from('tool_movements')
       .select('id, tool_id, event, latitude, longitude, created_at')
+      .eq('contractor_id', cid)
       .order('created_at', { ascending: false })
       .limit(3)
     if (data) {
