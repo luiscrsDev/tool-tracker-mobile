@@ -119,6 +119,13 @@ export default function DashboardScreen() {
     }
   }, [contractor?.id])
 
+  // Auto-refresh activity feed every 30s
+  useEffect(() => {
+    if (!contractor?.id) return
+    const interval = setInterval(fetchRecentMovements, 30000)
+    return () => clearInterval(interval)
+  }, [contractor?.id, fetchRecentMovements])
+
   // Auto-register tagged tools in BLE monitor + native service
   useEffect(() => {
     if (tools.length === 0 || tags.length === 0) return

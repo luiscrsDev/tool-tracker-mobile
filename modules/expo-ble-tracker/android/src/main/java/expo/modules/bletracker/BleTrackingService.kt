@@ -79,6 +79,11 @@ class BleTrackingService : Service() {
     data class DetectionHistory(val lat: Double, val lng: Double, val timestamp: Long, val speed: Double)
     private val recentDetections = mutableMapOf<String, MutableList<DetectionHistory>>() // toolId → last N detections
 
+    // Cooldown: minimum time between saves per tool (prevents flooding during driving)
+    private val lastSaveTime = mutableMapOf<String, Long>() // toolId → timestamp of last save
+    private val SPEED_COOLDOWN_MS = 2 * 60 * 1000L  // 2 min between speed saves
+    private val MOVEMENT_COOLDOWN_MS = 30 * 1000L     // 30s between movement saves
+
     private var supabaseUrl: String = ""
     private var supabaseKey: String = ""
 
@@ -293,16 +298,19 @@ class BleTrackingService : Service() {
                         // Need at least 2 detections before making decisions (avoids single GPS spike)
                         if (history.size < 2) continue
 
-                        // SPEED: any detection >10km/h, >2min since last, last != speed
-                        if (maxSpeed >= 10 && timeSinceLast > 2 * 60 * 1000 && last.event != "speed") {
+                        val sinceLastSave = now - (lastSaveTime[tag.toolId] ?: 0L)
+
+                        // SPEED: >10km/h, cooldown 2min between saves
+                        if (maxSpeed >= 10 && sinceLastSave > SPEED_COOLDOWN_MS) {
                             saveMovement(tag, "speed", lat, lng, maxSpeed)
                             lastPositions[tag.toolId] = LastPosition(lat, lng, "speed", now)
+                            lastSaveTime[tag.toolId] = now
                             history.clear()
                             continue
                         }
 
-                        // MOVEMENT: average position moved >threshold, speed <10
-                        if (distFromLast > effectiveThreshold && maxSpeed < 10) {
+                        // MOVEMENT: average position moved >threshold, speed <10, cooldown 30s
+                        if (distFromLast > effectiveThreshold && maxSpeed < 10 && sinceLastSave > MOVEMENT_COOLDOWN_MS) {
                             // Confirm movement is consistent — check spread of recent detections
                             val spread = if (history.size >= 2) {
                                 val first = history.first()
@@ -315,6 +323,7 @@ class BleTrackingService : Service() {
                             if (spread < effectiveThreshold * 3) {
                                 saveMovement(tag, "movement", avgLat, avgLng, speed)
                                 lastPositions[tag.toolId] = LastPosition(avgLat, avgLng, "movement", now)
+                                lastSaveTime[tag.toolId] = now
                                 history.clear()
                             }
                             continue
