@@ -298,14 +298,22 @@ class BleTrackingService : Service() {
                         // Need at least 2 detections before making decisions (avoids single GPS spike)
                         if (history.size < 2) continue
 
-                        val sinceLastSave = now - (lastSaveTime[tag.toolId] ?: 0L)
+                        val lastSave = lastSaveTime[tag.toolId] ?: 0L
+                        val sinceLastSave = now - lastSave
 
                         // SPEED: >10km/h, cooldown 2min between saves
-                        if (maxSpeed >= 10 && sinceLastSave > SPEED_COOLDOWN_MS) {
-                            saveMovement(tag, "speed", lat, lng, maxSpeed)
-                            lastPositions[tag.toolId] = LastPosition(lat, lng, "speed", now)
-                            lastSaveTime[tag.toolId] = now
-                            history.clear()
+                        if (maxSpeed >= 10) {
+                            if (sinceLastSave > SPEED_COOLDOWN_MS) {
+                                saveMovement(tag, "speed", lat, lng, maxSpeed)
+                                lastPositions[tag.toolId] = LastPosition(lat, lng, "speed", now)
+                                lastSaveTime[tag.toolId] = now
+                                history.clear()
+                                Log.d(TAG, "SPEED saved for ${tag.toolName} (${sinceLastSave/1000}s since last)")
+                            } else {
+                                // Update position without saving (for accurate stop detection later)
+                                lastPositions[tag.toolId] = LastPosition(lat, lng, "speed", now)
+                                Log.d(TAG, "SPEED skipped for ${tag.toolName} (${sinceLastSave/1000}s < ${SPEED_COOLDOWN_MS/1000}s cooldown)")
+                            }
                             continue
                         }
 
