@@ -81,8 +81,8 @@ class BleTrackingService : Service() {
 
     // Cooldown: minimum time between saves per tool (prevents flooding during driving)
     private val lastSaveTime = mutableMapOf<String, Long>() // toolId → timestamp of last save
-    private val SPEED_COOLDOWN_MS = 2 * 60 * 1000L  // 2 min between speed saves
-    private val MOVEMENT_COOLDOWN_MS = 30 * 1000L     // 30s between movement saves
+    private val SPEED_COOLDOWN_MS = 2 * 60 * 1000L     // 2 min between speed saves
+    private val MOVEMENT_COOLDOWN_MS = 2 * 60 * 1000L  // 2 min between movement saves
 
     private var supabaseUrl: String = ""
     private var supabaseKey: String = ""
