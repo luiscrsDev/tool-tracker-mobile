@@ -204,8 +204,9 @@ class BleTrackingService : Service() {
             stopPendingIntentScan()
 
             // Create PendingIntent
-            val intent = Intent(ACTION_BLE_SCAN_RESULT).apply {
-                setPackage(packageName)
+            // Use explicit BleScanReceiver — works even when service is dead
+            val intent = Intent(this, BleScanReceiver::class.java).apply {
+                action = ACTION_BLE_SCAN_RESULT
             }
             scanPendingIntent = PendingIntent.getBroadcast(this, 1, intent,
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE)

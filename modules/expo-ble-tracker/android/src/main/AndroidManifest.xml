@@ -20,5 +20,14 @@
         <action android:name="android.intent.action.BOOT_COMPLETED" />
       </intent-filter>
     </receiver>
+
+    <receiver
+      android:name="expo.modules.bletracker.BleScanReceiver"
+      android:enabled="true"
+      android:exported="false">
+      <intent-filter>
+        <action android:name="expo.modules.bletracker.BLE_SCAN_RESULT" />
+      </intent-filter>
+    </receiver>
   </application>
 </manifest>
