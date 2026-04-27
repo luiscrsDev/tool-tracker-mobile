@@ -33,6 +33,9 @@ class BleScanReceiver : BroadcastReceiver() {
         private const val MIN_DISTANCE_M = 15.0
         private const val STOP_TIMEOUT_MS = 4 * 60 * 1000L
         private const val COOLDOWN_MS = 2 * 60 * 1000L
+
+        // Lock to prevent concurrent processing from batch PendingIntent deliveries
+        private val LOCK = Any()
     }
 
     override fun onReceive(context: Context, intent: Intent) {
@@ -72,6 +75,27 @@ class BleScanReceiver : BroadcastReceiver() {
 
         Log.d(TAG, "📡 Receiver: ${detectedTools.size} tag(s) detected")
 
+        // Check cooldown BEFORE GPS request (prevents race condition)
+        val lastSaveTimes = loadLastSaveTimes(prefs)
+        val now = System.currentTimeMillis()
+        val toolsToProcess = mutableSetOf<Triple<String, String, String>>()
+
+        synchronized(LOCK) {
+            for (tool in detectedTools) {
+                val (toolId, _, _) = tool
+                val lastSave = lastSaveTimes[toolId] ?: 0L
+                if (now - lastSave >= COOLDOWN_MS) {
+                    toolsToProcess.add(tool)
+                    lastSaveTimes[toolId] = now // Reserve the slot immediately
+                }
+            }
+            if (toolsToProcess.isNotEmpty()) {
+                persistLastSaveTimes(prefs, lastSaveTimes) // Commit synchronously
+            }
+        }
+
+        if (toolsToProcess.isEmpty()) return // All tools in cooldown
+
         // Get GPS and save
         try {
             val fusedLocation = LocationServices.getFusedLocationProviderClient(context)
@@ -98,72 +122,59 @@ class BleScanReceiver : BroadcastReceiver() {
                     val lastSaveTimes = loadLastSaveTimes(prefs)
                     val now = System.currentTimeMillis()
 
-                    for ((toolId, toolName, contractorId) in detectedTools) {
+                    val gpsNow = System.currentTimeMillis()
+
+                    for ((toolId, toolName, contractorId) in toolsToProcess) {
                         val last = lastPositions[toolId]
-                        val lastSave = lastSaveTimes[toolId] ?: 0L
-                        val sinceLastSave = now - lastSave
 
                         // First detection
                         if (last == null) {
-                            lastPositions[toolId] = arrayOf(lat, lng, "detected", now.toDouble())
+                            lastPositions[toolId] = arrayOf(lat, lng, "detected", gpsNow.toDouble())
                             Log.d(TAG, "Receiver: First detection $toolName")
                             continue
                         }
 
-                        val lastLat = last[0]
-                        val lastLng = last[1]
+                        val lastLat = last[0] as Double
+                        val lastLng = last[1] as Double
                         val lastEvent = if (last[2] is String) last[2] as String else "unknown"
                         val lastTime = (last[3] as Double).toLong()
-                        val dist = haversine(lat, lng, lastLat as Double, lastLng as Double)
-                        val timeSince = now - lastTime
+                        val dist = haversine(lat, lng, lastLat, lastLng)
+                        val timeSince = gpsNow - lastTime
                         val threshold = maxOf(MIN_DISTANCE_M, accuracy * 2)
-
-                        // Cooldown check
-                        if (sinceLastSave < COOLDOWN_MS) {
-                            // Update position without saving
-                            val event = if (speed >= 10) "speed" else if (dist > threshold) "movement" else lastEvent
-                            lastPositions[toolId] = arrayOf(lat, lng, event, now.toDouble())
-                            continue
-                        }
 
                         // Speed
                         if (speed >= 10) {
                             saveMovement(supabaseUrl, supabaseKey, toolId, contractorId, "speed", lat, lng, speed)
-                            lastPositions[toolId] = arrayOf(lat, lng, "speed", now.toDouble())
-                            lastSaveTimes[toolId] = now
-                            Log.d(TAG, "Receiver: SPEED $toolName")
+                            lastPositions[toolId] = arrayOf(lat, lng, "speed", gpsNow.toDouble())
+                            Log.d(TAG, "Receiver: SPEED $toolName (${"%.0f".format(speed)}km/h)")
                             continue
                         }
 
                         // Movement
                         if (dist > threshold) {
                             saveMovement(supabaseUrl, supabaseKey, toolId, contractorId, "movement", lat, lng, speed)
-                            lastPositions[toolId] = arrayOf(lat, lng, "movement", now.toDouble())
-                            lastSaveTimes[toolId] = now
-                            Log.d(TAG, "Receiver: MOVEMENT $toolName")
+                            lastPositions[toolId] = arrayOf(lat, lng, "movement", gpsNow.toDouble())
+                            Log.d(TAG, "Receiver: MOVEMENT $toolName (${"%.0f".format(dist)}m)")
                             continue
                         }
 
-                        // Stop
+                        // Stop: stationary for >4min
                         if (timeSince > STOP_TIMEOUT_MS && lastEvent != "stop") {
                             saveMovement(supabaseUrl, supabaseKey, toolId, contractorId, "stop", lat, lng, 0.0)
-                            lastPositions[toolId] = arrayOf(lat, lng, "stop", now.toDouble())
-                            lastSaveTimes[toolId] = now
+                            lastPositions[toolId] = arrayOf(lat, lng, "stop", gpsNow.toDouble())
                             Log.d(TAG, "Receiver: STOP $toolName")
                             continue
                         }
 
-                        // Heartbeat
+                        // Heartbeat: >1h
                         if (timeSince > 60 * 60 * 1000) {
                             saveMovement(supabaseUrl, supabaseKey, toolId, contractorId, "stop", lat, lng, 0.0)
-                            lastPositions[toolId] = arrayOf(lat, lng, "stop", now.toDouble())
-                            lastSaveTimes[toolId] = now
+                            lastPositions[toolId] = arrayOf(lat, lng, "stop", gpsNow.toDouble())
+                            Log.d(TAG, "Receiver: HEARTBEAT $toolName")
                         }
                     }
 
-                    // Persist state
                     persistLastPositions(prefs, lastPositions)
-                    persistLastSaveTimes(prefs, lastSaveTimes)
                 }
         } catch (e: SecurityException) {
             Log.e(TAG, "Receiver: Location permission denied")
@@ -256,7 +267,7 @@ class BleScanReceiver : BroadcastReceiver() {
     private fun persistLastSaveTimes(prefs: android.content.SharedPreferences, map: Map<String, Long>) {
         val obj = JSONObject()
         for ((k, v) in map) obj.put(k, v)
-        prefs.edit().putString(KEY_LAST_SAVE_TIMES, obj.toString()).apply()
+        prefs.edit().putString(KEY_LAST_SAVE_TIMES, obj.toString()).commit() // commit() is synchronous
     }
 
     private fun haversine(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
