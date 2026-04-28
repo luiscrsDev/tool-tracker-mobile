@@ -17,8 +17,14 @@ import java.net.URL
 /**
  * Static BroadcastReceiver for PendingIntent BLE scan results.
  *
- * Registered in AndroidManifest — receives scan results even when the
- * service is dead. Processes detections directly and restarts the service.
+ * Called every ~2 minutes (controlled by reportDelay=120000 in BleTrackingService).
+ * Each call = one batch of detected devices. Simple logic:
+ *   1. Match MACs against tracked tags
+ *   2. Get GPS
+ *   3. Determine event type (speed/movement/stop/heartbeat)
+ *   4. Save ONE record per tool per batch
+ *
+ * No cooldown logic needed — the 2-min reportDelay handles throttling at system level.
  */
 class BleScanReceiver : BroadcastReceiver() {
 
@@ -29,13 +35,8 @@ class BleScanReceiver : BroadcastReceiver() {
         private const val KEY_SUPABASE_URL = "supabase_url"
         private const val KEY_SUPABASE_KEY = "supabase_key"
         private const val KEY_LAST_POSITIONS = "last_positions"
-        private const val KEY_LAST_SAVE_TIMES = "last_save_times"
         private const val MIN_DISTANCE_M = 15.0
         private const val STOP_TIMEOUT_MS = 4 * 60 * 1000L
-        private const val COOLDOWN_MS = 2 * 60 * 1000L
-
-        // Lock to prevent concurrent processing from batch PendingIntent deliveries
-        private val LOCK = Any()
     }
 
     override fun onReceive(context: Context, intent: Intent) {
@@ -49,11 +50,11 @@ class BleScanReceiver : BroadcastReceiver() {
         if (results.isNullOrEmpty()) return
 
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        val tagsJson = prefs.getString(KEY_TRACKED_TAGS, "{}") ?: "{}"
-        val trackedTags = mutableMapOf<String, Triple<String, String, String>>() // MAC → (toolId, toolName, contractorId)
 
+        // Load tracked tags
+        val trackedTags = mutableMapOf<String, Triple<String, String, String>>()
         try {
-            val obj = JSONObject(tagsJson)
+            val obj = JSONObject(prefs.getString(KEY_TRACKED_TAGS, "{}") ?: "{}")
             val keys = obj.keys()
             while (keys.hasNext()) {
                 val tagId = keys.next()
@@ -64,52 +65,32 @@ class BleScanReceiver : BroadcastReceiver() {
 
         if (trackedTags.isEmpty()) return
 
-        // Match detected MACs
-        val detectedTools = mutableSetOf<Triple<String, String, String>>()
+        // Match detected MACs — deduplicate to one per tool
+        val detectedTools = mutableMapOf<String, Triple<String, String, String>>() // toolId → (toolId, toolName, contractorId)
         for (result in results) {
             val mac = try { result.device.address } catch (e: SecurityException) { continue }
-            trackedTags[mac]?.let { detectedTools.add(it) }
+            val tool = trackedTags[mac] ?: continue
+            detectedTools[tool.first] = tool // dedupe by toolId
         }
 
         if (detectedTools.isEmpty()) return
+        Log.d(TAG, "📡 Batch: ${detectedTools.size} tool(s)")
 
-        Log.d(TAG, "📡 Receiver: ${detectedTools.size} tag(s) detected")
-
-        // Check cooldown BEFORE GPS request (prevents race condition)
-        val lastSaveTimes = loadLastSaveTimes(prefs)
-        val now = System.currentTimeMillis()
-        val toolsToProcess = mutableSetOf<Triple<String, String, String>>()
-
-        synchronized(LOCK) {
-            for (tool in detectedTools) {
-                val (toolId, _, _) = tool
-                val lastSave = lastSaveTimes[toolId] ?: 0L
-                if (now - lastSave >= COOLDOWN_MS) {
-                    toolsToProcess.add(tool)
-                    lastSaveTimes[toolId] = now // Reserve the slot immediately
-                }
-            }
-            if (toolsToProcess.isNotEmpty()) {
-                persistLastSaveTimes(prefs, lastSaveTimes) // Commit synchronously
-            }
-        }
-
-        if (toolsToProcess.isEmpty()) return // All tools in cooldown
-
-        // Get GPS and save
+        // Get GPS
         try {
             val fusedLocation = LocationServices.getFusedLocationProviderClient(context)
             val cts = CancellationTokenSource()
             fusedLocation.getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, cts.token)
                 .addOnSuccessListener { location ->
                     if (location == null) return@addOnSuccessListener
+
                     val lat = location.latitude
                     val lng = location.longitude
                     val accuracy = location.accuracy.toDouble()
                     val speed = location.speed.toDouble() * 3.6
 
                     if (accuracy > 50) {
-                        Log.d(TAG, "Receiver: GPS accuracy too low (${accuracy.toInt()}m)")
+                        Log.d(TAG, "GPS accuracy too low (${accuracy.toInt()}m)")
                         return@addOnSuccessListener
                     }
 
@@ -117,67 +98,63 @@ class BleScanReceiver : BroadcastReceiver() {
                     val supabaseKey = prefs.getString(KEY_SUPABASE_KEY, "") ?: ""
                     if (supabaseUrl.isEmpty() || supabaseKey.isEmpty()) return@addOnSuccessListener
 
-                    // Load persisted state
                     val lastPositions = loadLastPositions(prefs)
-                    val lastSaveTimes = loadLastSaveTimes(prefs)
                     val now = System.currentTimeMillis()
 
-                    val gpsNow = System.currentTimeMillis()
-
-                    for ((toolId, toolName, contractorId) in toolsToProcess) {
+                    for ((toolId, toolName, contractorId) in detectedTools.values) {
                         val last = lastPositions[toolId]
 
                         // First detection
                         if (last == null) {
-                            lastPositions[toolId] = arrayOf(lat, lng, "detected", gpsNow.toDouble())
-                            Log.d(TAG, "Receiver: First detection $toolName")
+                            lastPositions[toolId] = doubleArrayOf(lat, lng, 0.0, now.toDouble())
+                            Log.d(TAG, "First: $toolName")
                             continue
                         }
 
-                        val lastLat = last[0] as Double
-                        val lastLng = last[1] as Double
-                        val lastEvent = if (last[2] is String) last[2] as String else "unknown"
-                        val lastTime = (last[3] as Double).toLong()
+                        val lastLat = last[0]
+                        val lastLng = last[1]
+                        val lastEventCode = last[2].toInt() // 0=detected, 1=speed, 2=movement, 3=stop
+                        val lastTime = last[3].toLong()
                         val dist = haversine(lat, lng, lastLat, lastLng)
-                        val timeSince = gpsNow - lastTime
+                        val timeSince = now - lastTime
                         val threshold = maxOf(MIN_DISTANCE_M, accuracy * 2)
 
-                        // Speed
-                        if (speed >= 10) {
-                            saveMovement(supabaseUrl, supabaseKey, toolId, contractorId, "speed", lat, lng, speed)
-                            lastPositions[toolId] = arrayOf(lat, lng, "speed", gpsNow.toDouble())
-                            Log.d(TAG, "Receiver: SPEED $toolName (${"%.0f".format(speed)}km/h)")
-                            continue
+                        val event: String
+                        val eventCode: Double
+
+                        when {
+                            // Speed: >10 km/h
+                            speed >= 10 -> {
+                                event = "speed"; eventCode = 1.0
+                            }
+                            // Movement: position changed significantly
+                            dist > threshold -> {
+                                event = "movement"; eventCode = 2.0
+                            }
+                            // Stop: stationary >4 min, was moving
+                            timeSince > STOP_TIMEOUT_MS && lastEventCode != 3 -> {
+                                event = "stop"; eventCode = 3.0
+                            }
+                            // Heartbeat: >1h stationary
+                            timeSince > 60 * 60 * 1000 -> {
+                                event = "stop"; eventCode = 3.0
+                            }
+                            // No significant change — skip
+                            else -> {
+                                lastPositions[toolId] = doubleArrayOf(lat, lng, lastEventCode.toDouble(), now.toDouble())
+                                continue
+                            }
                         }
 
-                        // Movement
-                        if (dist > threshold) {
-                            saveMovement(supabaseUrl, supabaseKey, toolId, contractorId, "movement", lat, lng, speed)
-                            lastPositions[toolId] = arrayOf(lat, lng, "movement", gpsNow.toDouble())
-                            Log.d(TAG, "Receiver: MOVEMENT $toolName (${"%.0f".format(dist)}m)")
-                            continue
-                        }
-
-                        // Stop: stationary for >4min
-                        if (timeSince > STOP_TIMEOUT_MS && lastEvent != "stop") {
-                            saveMovement(supabaseUrl, supabaseKey, toolId, contractorId, "stop", lat, lng, 0.0)
-                            lastPositions[toolId] = arrayOf(lat, lng, "stop", gpsNow.toDouble())
-                            Log.d(TAG, "Receiver: STOP $toolName")
-                            continue
-                        }
-
-                        // Heartbeat: >1h
-                        if (timeSince > 60 * 60 * 1000) {
-                            saveMovement(supabaseUrl, supabaseKey, toolId, contractorId, "stop", lat, lng, 0.0)
-                            lastPositions[toolId] = arrayOf(lat, lng, "stop", gpsNow.toDouble())
-                            Log.d(TAG, "Receiver: HEARTBEAT $toolName")
-                        }
+                        saveMovement(supabaseUrl, supabaseKey, toolId, contractorId, event, lat, lng, speed)
+                        lastPositions[toolId] = doubleArrayOf(lat, lng, eventCode, now.toDouble())
+                        Log.d(TAG, "✅ $event → $toolName (${"%.0f".format(speed)}km/h, ${"%.0f".format(dist)}m)")
                     }
 
                     persistLastPositions(prefs, lastPositions)
                 }
         } catch (e: SecurityException) {
-            Log.e(TAG, "Receiver: Location permission denied")
+            Log.e(TAG, "Location permission denied")
         }
 
         // Ensure service is running
@@ -188,10 +165,10 @@ class BleScanReceiver : BroadcastReceiver() {
             } else {
                 context.startService(svcIntent)
             }
-        } catch (e: Exception) {
-            Log.w(TAG, "Receiver: Could not restart service: ${e.message}")
-        }
+        } catch (e: Exception) { /* ignore */ }
     }
+
+    // ─── Supabase ──────────────────────────────────────────────────────
 
     private fun saveMovement(url: String, key: String, toolId: String, contractorId: String, event: String, lat: Double, lng: Double, speed: Double) {
         Thread {
@@ -205,8 +182,7 @@ class BleScanReceiver : BroadcastReceiver() {
                 conn.setRequestProperty("apikey", key); conn.setRequestProperty("Authorization", "Bearer $key")
                 conn.setRequestProperty("Content-Type", "application/json"); conn.setRequestProperty("Prefer", "return=minimal")
                 conn.doOutput = true; conn.outputStream.write(body.toString().toByteArray())
-                val code = conn.responseCode; conn.disconnect()
-                if (code in 200..299) Log.i(TAG, "✅ Receiver: $event → $toolId")
+                conn.responseCode; conn.disconnect()
 
                 // Update last_seen_location
                 val locBody = JSONObject().apply {
@@ -221,54 +197,37 @@ class BleScanReceiver : BroadcastReceiver() {
                 conn2.requestMethod = "PATCH"; conn2.setRequestProperty("apikey", key); conn2.setRequestProperty("Authorization", "Bearer $key")
                 conn2.setRequestProperty("Content-Type", "application/json"); conn2.setRequestProperty("Prefer", "return=minimal")
                 conn2.doOutput = true; conn2.outputStream.write(locBody.toString().toByteArray()); conn2.responseCode; conn2.disconnect()
-            } catch (e: Exception) { Log.e(TAG, "Receiver save error: ${e.message}") }
+            } catch (e: Exception) { Log.e(TAG, "Save error: ${e.message}") }
         }.start()
     }
 
-    private fun loadLastPositions(prefs: android.content.SharedPreferences): MutableMap<String, Array<Any>> {
-        val map = mutableMapOf<String, Array<Any>>()
+    // ─── State Persistence ─────────────────────────────────────────────
+
+    private fun loadLastPositions(prefs: android.content.SharedPreferences): MutableMap<String, DoubleArray> {
+        val map = mutableMapOf<String, DoubleArray>()
         try {
-            val json = prefs.getString(KEY_LAST_POSITIONS, "{}") ?: "{}"
-            val obj = JSONObject(json)
+            val obj = JSONObject(prefs.getString(KEY_LAST_POSITIONS, "{}") ?: "{}")
             val keys = obj.keys()
             while (keys.hasNext()) {
                 val toolId = keys.next()
                 val p = obj.getJSONObject(toolId)
-                map[toolId] = arrayOf(p.getDouble("lat"), p.getDouble("lng"), p.getString("event"), p.getDouble("timestamp"))
+                map[toolId] = doubleArrayOf(p.getDouble("lat"), p.getDouble("lng"), p.optDouble("event", 0.0), p.getDouble("timestamp"))
             }
         } catch (e: Exception) { /* ignore */ }
         return map
     }
 
-    private fun persistLastPositions(prefs: android.content.SharedPreferences, map: Map<String, Array<Any>>) {
+    private fun persistLastPositions(prefs: android.content.SharedPreferences, map: Map<String, DoubleArray>) {
         val obj = JSONObject()
         for ((toolId, arr) in map) {
             obj.put(toolId, JSONObject().apply {
                 put("lat", arr[0]); put("lng", arr[1]); put("event", arr[2]); put("timestamp", arr[3])
             })
         }
-        prefs.edit().putString(KEY_LAST_POSITIONS, obj.toString()).apply()
+        prefs.edit().putString(KEY_LAST_POSITIONS, obj.toString()).commit()
     }
 
-    private fun loadLastSaveTimes(prefs: android.content.SharedPreferences): MutableMap<String, Long> {
-        val map = mutableMapOf<String, Long>()
-        try {
-            val json = prefs.getString(KEY_LAST_SAVE_TIMES, "{}") ?: "{}"
-            val obj = JSONObject(json)
-            val keys = obj.keys()
-            while (keys.hasNext()) {
-                val k = keys.next()
-                map[k] = obj.getLong(k)
-            }
-        } catch (e: Exception) { /* ignore */ }
-        return map
-    }
-
-    private fun persistLastSaveTimes(prefs: android.content.SharedPreferences, map: Map<String, Long>) {
-        val obj = JSONObject()
-        for ((k, v) in map) obj.put(k, v)
-        prefs.edit().putString(KEY_LAST_SAVE_TIMES, obj.toString()).commit() // commit() is synchronous
-    }
+    // ─── Utils ─────────────────────────────────────────────────────────
 
     private fun haversine(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
         val R = 6371000.0

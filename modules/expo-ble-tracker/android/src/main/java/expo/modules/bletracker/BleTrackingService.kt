@@ -141,7 +141,7 @@ class BleTrackingService : Service() {
 
             val settings = ScanSettings.Builder()
                 .setScanMode(ScanSettings.SCAN_MODE_LOW_POWER)
-                .setReportDelay(5000)
+                .setReportDelay(120000) // 2 min — system batches results, one delivery per 2 min
                 .build()
 
             scanner?.startScan(filters, settings, scanPendingIntent!!)
