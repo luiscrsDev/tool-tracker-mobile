@@ -2,7 +2,7 @@ import * as TaskManager from 'expo-task-manager'
 import * as Location from 'expo-location'
 import AsyncStorage from '@react-native-async-storage/async-storage'
 import { processDetection } from './movementEngine'
-import { startBleMonitoring, stopBleMonitoring, isMonitoring, getBleLastSeen, quickBleScan } from './bleMonitoring'
+// JS BLE monitoring removed — native Kotlin service handles all BLE tracking
 
 export const BACKGROUND_LOCATION_TASK = 'background-location-task'
 const ACTIVE_TOOLS_KEY = 'activeTrackingTools'
@@ -138,12 +138,7 @@ export async function startBackgroundTracking(): Promise<boolean> {
     })
     console.log('[BG] ✅ Background location started (fresh)')
 
-    // Start BLE monitoring (runs alongside foreground service)
-    if (!isMonitoring()) {
-      startBleMonitoring()
-      console.log('[BG] ✅ BLE monitoring started')
-    }
-
+    // BLE monitoring handled by native Kotlin service (duty cycle scan)
     return true
   } catch (err) {
     console.error('[BG] ❌ Failed to start:', (err as Error)?.message ?? err)

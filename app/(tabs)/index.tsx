@@ -8,7 +8,7 @@ import { useAuth } from '@/context/AuthContext'
 import { useTools } from '@/context/ToolsContext'
 import { useTags } from '@/context/TagsContext'
 import { startBackgroundTracking } from '@/lib/backgroundTracking'
-import { addTrackerToMonitor } from '@/lib/bleMonitoring'
+// JS BLE monitoring removed — native Kotlin service handles all tracking
 import { supabase } from '@/lib/supabase'
 import { useSites } from '@/context/SitesContext'
 import * as BleTracker from '@/modules/expo-ble-tracker/src'
@@ -148,14 +148,7 @@ export default function DashboardScreen() {
       const tag = getTagById(tool.assigned_tag)
       if (!tag) continue
 
-      // JS-level BLE monitor (works when app is open)
-      addTrackerToMonitor(tag.tag_id, {
-        toolId: tool.id,
-        toolName: tool.name,
-        contractorId: tool.contractor_id,
-      })
-
-      // Native-level BLE tracker (works in background)
+      // Native-level BLE tracker (handles all scanning + tracking)
       try {
         BleTracker.addTag(tag.tag_id, tool.id, tool.name, tool.contractor_id)
       } catch { /* native module not available */ }
