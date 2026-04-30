@@ -9,10 +9,10 @@ import {
   startBackgroundLocationUpdates,
   stopBackgroundLocationUpdates,
 } from '@/lib/backgroundTracking'
+// JS BLE monitoring removed — native Kotlin service handles all BLE tracking
+// Keeping removeTrackerFromMonitor for stopTracking cleanup
 import {
-  addTrackerToMonitor,
   removeTrackerFromMonitor,
-  setMonitoredTrackers,
   setOnDetectionCallback,
   destroyBleMonitor,
 } from '@/lib/bleMonitoring'
@@ -233,16 +233,7 @@ export function LocationProvider({ children }: { children: React.ReactNode }) {
         console.warn('[LocationContext] Could not refresh tag_id, using cached data')
       }
 
-      // Restore BLE monitors for all tagged tools at once
-      const taggedEntries = enriched
-        .filter(t => t.tagId)
-        .map(t => ({
-          tagId: t.tagId!,
-          tool: { toolId: t.id, toolName: t.name, contractorId: t.contractorId },
-        }))
-      if (taggedEntries.length > 0) {
-        setMonitoredTrackers(taggedEntries)
-      }
+      // BLE monitoring handled by native Kotlin service — no JS monitors needed
 
       await Promise.all(
         enriched.map(tool =>
@@ -274,12 +265,10 @@ export function LocationProvider({ children }: { children: React.ReactNode }) {
 
         if (tagId) {
           // ── BLE tool ──────────────────────────────────────────────
-          // Location is ONLY valid when beacon is physically detected nearby.
-          // bleMonitoring.ts saves GPS + updates Supabase on beacon detection.
-          // Do NOT set initial location from phone GPS here.
-          addTrackerToMonitor(tagId, { toolId, toolName, contractorId })
+          // BLE tracking handled entirely by native Kotlin service (duty cycle scan)
+          // Do NOT register in JS bleMonitoring — causes duplicate records
           setTracking(true)
-          console.log(`✅ RASTREAMENTO ATIVO (BLE): ${toolName} [${tagId}]\n`)
+          console.log(`✅ RASTREAMENTO ATIVO (nativo): ${toolName} [${tagId}]\n`)
         } else {
           // ── GPS tool ──────────────────────────────────────────────
           // Location follows the contractor's phone.
