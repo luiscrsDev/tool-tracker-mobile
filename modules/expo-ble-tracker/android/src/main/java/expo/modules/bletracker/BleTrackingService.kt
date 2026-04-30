@@ -148,8 +148,8 @@ class BleTrackingService : Service() {
             val bleScanner = btManager?.adapter?.bluetoothLeScanner ?: return
 
             // Cancel PendingIntent scan that targeted BleScanReceiver (old build)
-            val oldIntent = Intent(this, BleScanReceiver::class.java).apply {
-                action = "expo.modules.bletracker.BLE_SCAN_RESULT"
+            val oldIntent = Intent("expo.modules.bletracker.BLE_SCAN_RESULT").apply {
+                setClassName(packageName, "expo.modules.bletracker.BleScanReceiver")
             }
             val oldPi = PendingIntent.getBroadcast(this, 1, oldIntent,
                 PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_MUTABLE)
