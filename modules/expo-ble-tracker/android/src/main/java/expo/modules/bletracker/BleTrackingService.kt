@@ -100,6 +100,9 @@ class BleTrackingService : Service() {
             startForeground(NOTIFICATION_ID, notification)
         }
 
+        // Cancel any stale PendingIntent scans from previous builds
+        cancelStalePendingIntentScans()
+
         loadConfig()
         loadLastPositions()
         initScanner()
@@ -135,6 +138,41 @@ class BleTrackingService : Service() {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(intent)
             else startService(intent)
         } catch (e: Exception) { /* ignore */ }
+    }
+
+    // ─── Cancel stale PendingIntent scans from previous builds ─────────
+
+    private fun cancelStalePendingIntentScans() {
+        try {
+            val btManager = getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
+            val bleScanner = btManager?.adapter?.bluetoothLeScanner ?: return
+
+            // Cancel PendingIntent scan that targeted BleScanReceiver (old build)
+            val oldIntent = Intent(this, BleScanReceiver::class.java).apply {
+                action = "expo.modules.bletracker.BLE_SCAN_RESULT"
+            }
+            val oldPi = PendingIntent.getBroadcast(this, 1, oldIntent,
+                PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_MUTABLE)
+            if (oldPi != null) {
+                bleScanner.stopScan(oldPi)
+                oldPi.cancel()
+                Log.i(TAG, "✅ Cancelled stale PendingIntent scan (BleScanReceiver)")
+            }
+
+            // Cancel any PendingIntent scan with generic action
+            val oldIntent2 = Intent("expo.modules.bletracker.BLE_SCAN_RESULT").apply {
+                setPackage(packageName)
+            }
+            val oldPi2 = PendingIntent.getBroadcast(this, 1, oldIntent2,
+                PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_MUTABLE)
+            if (oldPi2 != null) {
+                bleScanner.stopScan(oldPi2)
+                oldPi2.cancel()
+                Log.i(TAG, "✅ Cancelled stale PendingIntent scan (generic)")
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Cancel stale scans: ${e.message}")
+        }
     }
 
     // ─── Alarm-based scheduling ────────────────────────────────────────
