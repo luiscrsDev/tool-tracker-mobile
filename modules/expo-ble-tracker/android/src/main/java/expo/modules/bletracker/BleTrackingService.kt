@@ -118,19 +118,15 @@ class BleTrackingService : Service(), RangeNotifier {
         // AltBeacon format
         beaconManager?.beaconParsers?.add(AltBeaconParser())
 
-        // Configure foreground service with our notification
-        val notification = buildNotification("Rastreando ferramentas...")
-        val settings = Settings(
-            scanStrategy = Settings.ForegroundServiceScanStrategy(notification, NOTIFICATION_ID),
-            scanPeriods = Settings.ScanPeriods(
-                1100,    // foreground scan: 1.1s
-                0,       // foreground between: continuous
-                3000,    // background scan: 3s
-                117000   // background between: 117s (total cycle = 2 min)
-            ),
-            longScanForcingEnabled = true
-        )
-        beaconManager?.replaceSettings(settings)
+        // Configure scan periods
+        beaconManager?.foregroundScanPeriod = 1100       // 1.1s scan in foreground
+        beaconManager?.foregroundBetweenScanPeriod = 0   // continuous in foreground
+        beaconManager?.backgroundScanPeriod = 3000       // 3s scan in background
+        beaconManager?.backgroundBetweenScanPeriod = 117000 // 117s pause = 2 min cycle
+
+        // Enable foreground service so scanning persists in background
+        beaconManager?.enableForegroundServiceScanning(buildNotification("Rastreando ferramentas..."), NOTIFICATION_ID)
+        beaconManager?.setEnableScheduledScanJobs(false) // Disable JobScheduler, use foreground service only
 
         // Add range notifier
         beaconManager?.addRangeNotifier(this)
