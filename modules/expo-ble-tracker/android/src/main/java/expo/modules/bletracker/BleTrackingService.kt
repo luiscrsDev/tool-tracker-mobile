@@ -147,29 +147,49 @@ class BleTrackingService : Service() {
             val btManager = getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
             val bleScanner = btManager?.adapter?.bluetoothLeScanner ?: return
 
-            // Cancel PendingIntent scan that targeted BleScanReceiver (old build)
-            val oldIntent = Intent("expo.modules.bletracker.BLE_SCAN_RESULT").apply {
-                setClassName(packageName, "expo.modules.bletracker.BleScanReceiver")
-            }
-            val oldPi = PendingIntent.getBroadcast(this, 1, oldIntent,
-                PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_MUTABLE)
-            if (oldPi != null) {
-                bleScanner.stopScan(oldPi)
-                oldPi.cancel()
-                Log.i(TAG, "✅ Cancelled stale PendingIntent scan (BleScanReceiver)")
+            // Try ALL possible PendingIntent combinations from previous builds
+            val actions = listOf(
+                "expo.modules.bletracker.BLE_SCAN_RESULT",
+            )
+            val classes = listOf(
+                "expo.modules.bletracker.BleScanReceiver",
+                "expo.modules.bletracker.BleTrackingService",
+            )
+            val requestCodes = listOf(0, 1, 2)
+
+            var cancelled = 0
+            for (action in actions) {
+                for (cls in classes) {
+                    for (rc in requestCodes) {
+                        try {
+                            val intent = Intent(action).apply { setClassName(packageName, cls) }
+                            val pi = PendingIntent.getBroadcast(this, rc, intent,
+                                PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_MUTABLE)
+                            if (pi != null) {
+                                bleScanner.stopScan(pi)
+                                pi.cancel()
+                                cancelled++
+                            }
+                        } catch (e: Exception) { /* ignore */ }
+                    }
+                }
+                // Also try without explicit class
+                for (rc in requestCodes) {
+                    try {
+                        val intent = Intent(action).apply { setPackage(packageName) }
+                        val pi = PendingIntent.getBroadcast(this, rc, intent,
+                            PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_MUTABLE)
+                        if (pi != null) {
+                            bleScanner.stopScan(pi)
+                            pi.cancel()
+                            cancelled++
+                        }
+                    } catch (e: Exception) { /* ignore */ }
+                }
             }
 
-            // Cancel any PendingIntent scan with generic action
-            val oldIntent2 = Intent("expo.modules.bletracker.BLE_SCAN_RESULT").apply {
-                setPackage(packageName)
-            }
-            val oldPi2 = PendingIntent.getBroadcast(this, 1, oldIntent2,
-                PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_MUTABLE)
-            if (oldPi2 != null) {
-                bleScanner.stopScan(oldPi2)
-                oldPi2.cancel()
-                Log.i(TAG, "✅ Cancelled stale PendingIntent scan (generic)")
-            }
+            if (cancelled > 0) Log.i(TAG, "✅ Cancelled $cancelled stale PendingIntent scan(s)")
+            else Log.d(TAG, "No stale PendingIntent scans found")
         } catch (e: Exception) {
             Log.w(TAG, "Cancel stale scans: ${e.message}")
         }
