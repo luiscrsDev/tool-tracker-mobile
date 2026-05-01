@@ -1,79 +1,63 @@
 package expo.modules.bletracker
 
-import android.app.AlarmManager
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
-import android.bluetooth.BluetoothManager
-import android.bluetooth.le.BluetoothLeScanner
-import android.bluetooth.le.ScanCallback
-import android.bluetooth.le.ScanFilter
-import android.bluetooth.le.ScanResult
-import android.bluetooth.le.ScanSettings
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
-import android.os.Handler
 import android.os.IBinder
-import android.os.Looper
-import android.os.PowerManager
 import android.util.Log
 import com.google.android.gms.location.LocationServices
 import com.google.android.gms.location.Priority
 import com.google.android.gms.tasks.CancellationTokenSource
+import org.altbeacon.beacon.*
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
 
 /**
- * BLE Tracking Foreground Service using duty-cycle scanning.
+ * BLE Tracking Service using Android Beacon Library (AltBeacon).
  *
- * Strategy (from AltBeacon library best practices):
- * - Scan for 3 seconds every 2 minutes (duty cycle ~2.5%)
- * - Uses AlarmManager for precise timing even in doze
- * - Processes results immediately in ScanCallback (no PendingIntent/Receiver)
- * - One save per tool per scan cycle (natural throttle)
- * - GPS + Supabase save done directly in service
+ * The library manages ALL BLE scanning internally:
+ * - Foreground: 1.1s scan, continuous
+ * - Background: 3s scan every 2 min (duty cycle ~2.5%)
+ * - Handles Samsung quirks, Android version differences, battery optimization
+ * - Survives background, doze, screen off
  *
- * This avoids: reportDelay hardware bugs, BroadcastReceiver race conditions,
- * SharedPreferences cooldown failures, and Samsung batching issues.
+ * We only:
+ * 1. Configure the library with scan periods and MAC filters
+ * 2. Listen for ranging callbacks (1x per scan cycle)
+ * 3. Get GPS and save to Supabase when tools are detected
  */
-class BleTrackingService : Service() {
+class BleTrackingService : Service(), RangeNotifier {
 
     companion object {
         private const val TAG = "BleTracker"
         private const val CHANNEL_ID = "ble_tracker_channel"
         private const val NOTIFICATION_ID = 9001
-        private const val ACTION_SCAN_TICK = "expo.modules.bletracker.SCAN_TICK"
-
-        private const val SCAN_DURATION_MS = 3000L        // 3 sec scan window
-        private const val SCAN_INTERVAL_MS = 2 * 60 * 1000L // 2 min between scans
-        private const val MIN_DISTANCE_M = 15.0
-        private const val STOP_TIMEOUT_MS = 4 * 60 * 1000L
-
         private const val PREFS_NAME = "ble_tracker_prefs"
         private const val KEY_TRACKED_TAGS = "tracked_tags"
         private const val KEY_SUPABASE_URL = "supabase_url"
         private const val KEY_SUPABASE_KEY = "supabase_key"
         private const val KEY_LAST_POSITIONS = "last_positions"
+        private const val MIN_DISTANCE_M = 15.0
+        private const val STOP_TIMEOUT_MS = 4 * 60 * 1000L
 
         @Volatile var pauseScanning = false
         @Volatile var lastScanTimestamp = 0L
     }
 
-    private var scanner: BluetoothLeScanner? = null
-    private var wakeLock: PowerManager.WakeLock? = null
-    private val handler = Handler(Looper.getMainLooper())
+    private var beaconManager: BeaconManager? = null
     private val trackedTags = mutableMapOf<String, Triple<String, String, String>>() // MAC → (toolId, toolName, contractorId)
     private val lastPositions = mutableMapOf<String, DoubleArray>() // toolId → [lat, lng, eventCode, timestamp]
+    private val regions = mutableListOf<Region>()
     private var supabaseUrl = ""
     private var supabaseKey = ""
-
-    // Detections collected during current 3-sec scan window
-    private val currentDetections = mutableSetOf<String>() // MACs detected this cycle
+    private var lastRangeTimestamp = 0L
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -81,14 +65,9 @@ class BleTrackingService : Service() {
         super.onCreate()
         Log.i(TAG, "Service created")
 
-        val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
-        wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "BleTracker::ScanWakeLock").apply {
-            setReferenceCounted(false)
-            acquire()
-        }
-
         createNotificationChannel()
-        val notification = buildNotification("Rastreando ferramentas...")
+        val notification = buildNotification("Iniciando rastreamento...")
+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             try {
                 startForeground(NOTIFICATION_ID, notification,
@@ -100,36 +79,22 @@ class BleTrackingService : Service() {
             startForeground(NOTIFICATION_ID, notification)
         }
 
-        // Cancel any stale PendingIntent scans from previous builds
-        cancelStalePendingIntentScans()
-
         loadConfig()
         loadLastPositions()
-        initScanner()
-
-        // First scan immediately, then schedule
-        performScanCycle()
-        scheduleNextScan()
+        setupBeaconManager()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.action == ACTION_SCAN_TICK) {
-            performScanCycle()
-            scheduleNextScan()
-        } else {
-            loadConfig()
-            Log.i(TAG, "Service started with ${trackedTags.size} tags")
-        }
+        loadConfig()
+        Log.i(TAG, "Service started with ${trackedTags.size} tags")
+        restartRanging()
         return START_STICKY
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        handler.removeCallbacksAndMessages(null)
-        try { scanner?.stopScan(scanCallback) } catch (e: Exception) { /* ignore */ }
+        stopRanging()
         saveLastPositions()
-        wakeLock?.release()
-        cancelAlarm()
         Log.i(TAG, "Service destroyed")
 
         // Self-restart
@@ -140,142 +105,94 @@ class BleTrackingService : Service() {
         } catch (e: Exception) { /* ignore */ }
     }
 
-    // ─── Cancel stale PendingIntent scans from previous builds ─────────
+    // ─── AltBeacon Setup ───────────────────────────────────────────────
 
-    private fun cancelStalePendingIntentScans() {
-        try {
-            val btManager = getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
-            val bleScanner = btManager?.adapter?.bluetoothLeScanner ?: return
+    private fun setupBeaconManager() {
+        beaconManager = BeaconManager.getInstanceForApplication(this)
 
-            // Try ALL possible PendingIntent combinations from previous builds
-            val actions = listOf(
-                "expo.modules.bletracker.BLE_SCAN_RESULT",
-            )
-            val classes = listOf(
-                "expo.modules.bletracker.BleScanReceiver",
-                "expo.modules.bletracker.BleTrackingService",
-            )
-            val requestCodes = listOf(0, 1, 2)
+        // Add parsers for Eddystone (MokoSmart M1P uses Eddystone UID)
+        beaconManager?.beaconParsers?.add(BeaconParser().setBeaconLayout(BeaconParser.EDDYSTONE_UID_LAYOUT))
+        beaconManager?.beaconParsers?.add(BeaconParser().setBeaconLayout(BeaconParser.EDDYSTONE_TLM_LAYOUT))
+        // Also add iBeacon parser (M1P can broadcast as iBeacon)
+        beaconManager?.beaconParsers?.add(BeaconParser().setBeaconLayout("m:2-3=0215,i:4-19,i:20-21,i:22-23,p:24-24"))
+        // AltBeacon format
+        beaconManager?.beaconParsers?.add(AltBeaconParser())
 
-            var cancelled = 0
-            for (action in actions) {
-                for (cls in classes) {
-                    for (rc in requestCodes) {
-                        try {
-                            val intent = Intent(action).apply { setClassName(packageName, cls) }
-                            val pi = PendingIntent.getBroadcast(this, rc, intent,
-                                PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_MUTABLE)
-                            if (pi != null) {
-                                bleScanner.stopScan(pi)
-                                pi.cancel()
-                                cancelled++
-                            }
-                        } catch (e: Exception) { /* ignore */ }
-                    }
-                }
-                // Also try without explicit class
-                for (rc in requestCodes) {
-                    try {
-                        val intent = Intent(action).apply { setPackage(packageName) }
-                        val pi = PendingIntent.getBroadcast(this, rc, intent,
-                            PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_MUTABLE)
-                        if (pi != null) {
-                            bleScanner.stopScan(pi)
-                            pi.cancel()
-                            cancelled++
-                        }
-                    } catch (e: Exception) { /* ignore */ }
-                }
-            }
+        // Configure foreground service with our notification
+        val notification = buildNotification("Rastreando ferramentas...")
+        val settings = Settings(
+            scanStrategy = Settings.ForegroundServiceScanStrategy(notification, NOTIFICATION_ID),
+            scanPeriods = Settings.ScanPeriods(
+                1100,    // foreground scan: 1.1s
+                0,       // foreground between: continuous
+                3000,    // background scan: 3s
+                117000   // background between: 117s (total cycle = 2 min)
+            ),
+            longScanForcingEnabled = true
+        )
+        beaconManager?.replaceSettings(settings)
 
-            if (cancelled > 0) Log.i(TAG, "✅ Cancelled $cancelled stale PendingIntent scan(s)")
-            else Log.d(TAG, "No stale PendingIntent scans found")
-        } catch (e: Exception) {
-            Log.w(TAG, "Cancel stale scans: ${e.message}")
-        }
+        // Add range notifier
+        beaconManager?.addRangeNotifier(this)
+
+        Log.i(TAG, "AltBeacon manager configured")
+        startRanging()
     }
 
-    // ─── Alarm-based scheduling ────────────────────────────────────────
+    // ─── Ranging ───────────────────────────────────────────────────────
 
-    private fun scheduleNextScan() {
-        val am = getSystemService(Context.ALARM_SERVICE) as AlarmManager
-        val intent = Intent(this, BleTrackingService::class.java).apply { action = ACTION_SCAN_TICK }
-        val pi = PendingIntent.getService(this, 0, intent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-        am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP,
-            System.currentTimeMillis() + SCAN_INTERVAL_MS, pi)
-    }
-
-    private fun cancelAlarm() {
-        val am = getSystemService(Context.ALARM_SERVICE) as AlarmManager
-        val intent = Intent(this, BleTrackingService::class.java).apply { action = ACTION_SCAN_TICK }
-        val pi = PendingIntent.getService(this, 0, intent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-        am.cancel(pi)
-    }
-
-    // ─── Scan Cycle ────────────────────────────────────────────────────
-
-    private fun performScanCycle() {
-        if (pauseScanning || trackedTags.isEmpty()) return
-        if (scanner == null) initScanner()
-        if (scanner == null) return
-
-        lastScanTimestamp = System.currentTimeMillis()
-        currentDetections.clear()
-
-        try {
-            val filters = trackedTags.keys.map { mac ->
-                ScanFilter.Builder().setDeviceAddress(mac).build()
-            }
-            val settings = ScanSettings.Builder()
-                .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY) // Full power for 3 sec only
-                .build()
-
-            scanner?.startScan(filters, settings, scanCallback)
-            Log.d(TAG, "Scan started (${SCAN_DURATION_MS/1000}s)")
-
-            // Stop after SCAN_DURATION_MS and process
-            handler.postDelayed({
-                try { scanner?.stopScan(scanCallback) } catch (e: Exception) { /* ignore */ }
-                processDetections()
-            }, SCAN_DURATION_MS)
-
-        } catch (e: SecurityException) {
-            Log.e(TAG, "Scan permission denied: ${e.message}")
-        }
-    }
-
-    private val scanCallback = object : ScanCallback() {
-        override fun onScanResult(callbackType: Int, result: ScanResult) {
-            val mac = try { result.device.address } catch (e: SecurityException) { return }
-            if (trackedTags.containsKey(mac)) {
-                currentDetections.add(mac)
-            }
-        }
-        override fun onScanFailed(errorCode: Int) {
-            Log.e(TAG, "Scan failed: $errorCode")
-        }
-    }
-
-    // ─── Process Detections ────────────────────────────────────────────
-
-    private fun processDetections() {
-        if (currentDetections.isEmpty()) {
-            Log.d(TAG, "No tags in range")
-            updateNotification("Sem ferramentas no alcance")
+    private fun startRanging() {
+        if (trackedTags.isEmpty()) {
+            Log.w(TAG, "No tags to track")
+            updateNotification("Sem ferramentas configuradas")
             return
         }
 
-        val detectedTools = currentDetections.mapNotNull { mac ->
-            trackedTags[mac]?.let { (toolId, toolName, contractorId) ->
-                Triple(toolId, toolName, contractorId)
-            }
-        }.distinctBy { it.first } // One per tool
+        // Create a Region for each tracked MAC
+        regions.clear()
+        for ((mac, tool) in trackedTags) {
+            val region = Region("tool-${tool.first}", mac)
+            regions.add(region)
+            beaconManager?.startRangingBeacons(region)
+            Log.d(TAG, "Ranging started for ${tool.second} ($mac)")
+        }
 
-        Log.d(TAG, "Detected ${detectedTools.size} tool(s): ${detectedTools.map { it.second }.joinToString()}")
+        updateNotification("Rastreando ${trackedTags.size} ferramenta(s)")
+    }
 
-        // Get GPS
+    private fun stopRanging() {
+        for (region in regions) {
+            try { beaconManager?.stopRangingBeacons(region) } catch (e: Exception) { /* ignore */ }
+        }
+        regions.clear()
+    }
+
+    private fun restartRanging() {
+        stopRanging()
+        startRanging()
+    }
+
+    // ─── RangeNotifier Callback ────────────────────────────────────────
+
+    override fun didRangeBeaconsInRegion(beacons: Collection<Beacon>, region: Region) {
+        if (beacons.isEmpty() || pauseScanning) return
+
+        lastScanTimestamp = System.currentTimeMillis()
+
+        // Find which tool this region belongs to
+        val mac = region.bluetoothAddress ?: return
+        val tool = trackedTags[mac] ?: return
+        val (toolId, toolName, contractorId) = tool
+
+        // Throttle: max 1 save per tool per 2 min
+        val now = System.currentTimeMillis()
+        val last = lastPositions[toolId]
+        val lastTime = last?.get(3)?.toLong() ?: 0L
+        if (now - lastTime < 110000) return // < 1 min 50s since last save (buffer for 2 min cycle)
+
+        Log.d(TAG, "📡 Ranged: $toolName ($mac) ${beacons.size} beacon(s)")
+
+        // Get GPS and process
         try {
             val fusedLocation = LocationServices.getFusedLocationProviderClient(this)
             val cts = CancellationTokenSource()
@@ -295,44 +212,41 @@ class BleTrackingService : Service() {
                         return@addOnSuccessListener
                     }
 
-                    val now = System.currentTimeMillis()
+                    val gpsNow = System.currentTimeMillis()
 
-                    for ((toolId, toolName, contractorId) in detectedTools) {
-                        val last = lastPositions[toolId]
-
-                        if (last == null) {
-                            lastPositions[toolId] = doubleArrayOf(lat, lng, 0.0, now.toDouble())
-                            Log.d(TAG, "First: $toolName")
-                            continue
-                        }
-
-                        val lastLat = last[0]; val lastLng = last[1]
-                        val lastEventCode = last[2].toInt()
-                        val lastTime = last[3].toLong()
-                        val dist = haversine(lat, lng, lastLat, lastLng)
-                        val timeSince = now - lastTime
-                        val threshold = maxOf(MIN_DISTANCE_M, accuracy * 2)
-
-                        val event: String; val eventCode: Double
-
-                        when {
-                            speed >= 10 -> { event = "speed"; eventCode = 1.0 }
-                            dist > threshold -> { event = "movement"; eventCode = 2.0 }
-                            timeSince > STOP_TIMEOUT_MS && lastEventCode != 3 -> { event = "stop"; eventCode = 3.0 }
-                            timeSince > 60 * 60 * 1000 -> { event = "stop"; eventCode = 3.0 }
-                            else -> {
-                                lastPositions[toolId] = doubleArrayOf(lat, lng, last[2], now.toDouble())
-                                continue
-                            }
-                        }
-
-                        saveMovement(toolId, contractorId, event, lat, lng, speed)
-                        lastPositions[toolId] = doubleArrayOf(lat, lng, eventCode, now.toDouble())
-                        Log.i(TAG, "✅ $event → $toolName (${"%.0f".format(speed)}km/h)")
+                    if (last == null) {
+                        lastPositions[toolId] = doubleArrayOf(lat, lng, 0.0, gpsNow.toDouble())
+                        Log.d(TAG, "First: $toolName")
+                        saveLastPositions()
+                        return@addOnSuccessListener
                     }
 
-                    val names = detectedTools.map { it.second }
-                    updateNotification("${names.joinToString()} • ${names.size} detectada(s)")
+                    val lastLat = last[0]; val lastLng = last[1]
+                    val lastEventCode = last[2].toInt()
+                    val dist = haversine(lat, lng, lastLat, lastLng)
+                    val timeSince = gpsNow - lastTime
+                    val threshold = maxOf(MIN_DISTANCE_M, accuracy * 2)
+
+                    val event: String; val eventCode: Double
+
+                    when {
+                        speed >= 10 -> { event = "speed"; eventCode = 1.0 }
+                        dist > threshold -> { event = "movement"; eventCode = 2.0 }
+                        timeSince > STOP_TIMEOUT_MS && lastEventCode != 3 -> { event = "stop"; eventCode = 3.0 }
+                        timeSince > 60 * 60 * 1000 -> { event = "stop"; eventCode = 3.0 }
+                        else -> {
+                            // No significant change — update position without saving
+                            lastPositions[toolId] = doubleArrayOf(lat, lng, last[2], gpsNow.toDouble())
+                            saveLastPositions()
+                            return@addOnSuccessListener
+                        }
+                    }
+
+                    saveMovement(toolId, contractorId, event, lat, lng, speed)
+                    lastPositions[toolId] = doubleArrayOf(lat, lng, eventCode, gpsNow.toDouble())
+                    Log.i(TAG, "✅ $event → $toolName (${"%.0f".format(speed)}km/h)")
+
+                    updateNotification("$toolName • $event")
                     saveLastPositions()
                 }
         } catch (e: SecurityException) { Log.e(TAG, "Location denied") }
@@ -372,12 +286,6 @@ class BleTrackingService : Service() {
     }
 
     // ─── Config & State ────────────────────────────────────────────────
-
-    private fun initScanner() {
-        try {
-            scanner = (getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)?.adapter?.bluetoothLeScanner
-        } catch (e: SecurityException) { Log.e(TAG, "BLE init denied") }
-    }
 
     private fun loadConfig() {
         val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
