@@ -128,7 +128,7 @@ class BleTrackingService : Service() {
 
     // ─── BLE Scanner ───────────────────────────────────────────────────
 
-    private fun startScan() {
+    internal fun startScan() {
         if (scanning) return
         if (trackedTags.isEmpty()) {
             Log.w(TAG, "No tags to track")
@@ -166,7 +166,7 @@ class BleTrackingService : Service() {
         }
     }
 
-    private fun stopScan() {
+    internal fun stopScan() {
         if (!scanning) return
         try {
             val adapter = (getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)?.adapter

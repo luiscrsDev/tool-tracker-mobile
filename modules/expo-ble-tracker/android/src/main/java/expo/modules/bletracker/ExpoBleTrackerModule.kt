@@ -3,6 +3,8 @@ package expo.modules.bletracker
 import android.content.Context
 import android.content.Intent
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
@@ -115,8 +117,9 @@ class ExpoBleTrackerModule : Module() {
         Function("startForegroundScan") {
             val ctx = appContext.reactContext ?: return@Function false
 
-            // Pause background service scan to avoid conflicts
+            // Stop background BLE scan entirely — Samsung does not support two concurrent scans
             BleTrackingService.pauseScanning = true
+            BleTrackingService.instance?.stopScan()
 
             foregroundScanner?.stop()
             foregroundScanner = BleForegroundScanner(ctx)
@@ -140,13 +143,15 @@ class ExpoBleTrackerModule : Module() {
                     } catch (e: Exception) { /* ignore */ }
                     // Resume background service scan
                     BleTrackingService.pauseScanning = false
+                    BleTrackingService.instance?.startScan()
                 }
 
                 override fun onScanError(message: String) {
                     Log.e(TAG, "Foreground scan error: $message")
                     BleTrackingService.pauseScanning = false
+                    BleTrackingService.instance?.startScan()
                 }
-            }, timeoutMs = 60000) // 60 second timeout
+            }, timeoutMs = 600000) // 10 minute timeout
 
             try {
                 sendEvent("onScanStateChange", mapOf("scanning" to true))
@@ -159,6 +164,7 @@ class ExpoBleTrackerModule : Module() {
             foregroundScanner?.stop()
             foregroundScanner = null
             BleTrackingService.pauseScanning = false
+            BleTrackingService.instance?.startScan()
             Log.i(TAG, "Foreground scan stopped")
             true
         }
@@ -167,13 +173,11 @@ class ExpoBleTrackerModule : Module() {
         AsyncFunction("ringTag") { deviceId: String, command: String ->
             val ctx = appContext.reactContext ?: return@AsyncFunction false
 
-            foregroundScanner?.stop()
+            // Don't stop foreground scanner — Android supports simultaneous scan + GATT
             BleTrackingService.pauseScanning = true
 
             var success = false
             try {
-                Thread.sleep(1000) // Wait for scans to stop
-
                 val client = MokoGattClient(ctx)
                 success = try {
                     runBlocking {
@@ -255,11 +259,19 @@ class ExpoBleTrackerModule : Module() {
     private fun getPrefs() =
         appContext.reactContext!!.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
+    private val notifyHandler = Handler(Looper.getMainLooper())
+    private var notifyRunnable: Runnable? = null
+
     private fun notifyService() {
-        BleTrackingService.instance?.apply {
-            loadConfig()
-            restartScan()
+        BleTrackingService.instance?.loadConfig()
+        if (BleTrackingService.pauseScanning) return
+        notifyRunnable?.let { notifyHandler.removeCallbacks(it) }
+        notifyRunnable = Runnable {
+            if (!BleTrackingService.pauseScanning) {
+                BleTrackingService.instance?.restartScan()
+            }
         }
+        notifyHandler.postDelayed(notifyRunnable!!, 500L)
     }
 
     private fun isServiceRunning(ctx: Context): Boolean {

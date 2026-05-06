@@ -9,6 +9,8 @@ function getBleManager(): BleManager {
     try {
       console.log('🔧 Inicializando BleManager...')
       bleManager = new BleManager()
+      // Absorb internal state-change events to prevent uncaught promise rejections
+      bleManager.onStateChange(() => {}, false)
       console.log('✅ BleManager inicializado com sucesso')
     } catch (error) {
       console.error('❌ BleManager initialization failed:', error)
@@ -60,15 +62,9 @@ export const BLEService = {
     return true
   },
 
-  // Check if Bluetooth is enabled
+  // State check removed — startDeviceScan handles BT-off errors natively
   async checkBluetoothState(): Promise<boolean> {
-    try {
-      const state = await getBleManager().state()
-      return state === 'PoweredOn'
-    } catch (err) {
-      console.error('❌ Error checking Bluetooth state:', err)
-      return false
-    }
+    return true
   },
 
   // Start scanning for devices

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useCallback } from 'react'
 import {
   View, Text, TouchableOpacity, ActivityIndicator,
   FlatList, Modal, TextInput, ScrollView, KeyboardAvoidingView, Platform,
@@ -9,6 +9,11 @@ import { useTools } from '@/context/ToolsContext'
 import { useTags } from '@/context/TagsContext'
 import { useAuth } from '@/context/AuthContext'
 import { bondDevice } from '@/modules/expo-fmdn/src'
+import {
+  startForegroundScan, stopForegroundScan,
+  addDeviceFoundListener, addScanStateListener,
+  type ScannedDevice,
+} from '@/modules/expo-ble-tracker/src'
 
 // UUIDs conhecidos para referência
 const KNOWN_UUIDS: Record<string, string> = {
@@ -54,10 +59,13 @@ function stableTagId(device: PairingDevice): string {
 
 export default function AirTagScreen() {
   const { contractor } = useAuth()
-  const { startScanning, stopScanning, devices, scanning, inspectDevice, readStableId, playSound, playTuyaSound, ringFMDN, provisionEIK, selectedDevice, error } = useBluetooth()
+  const { inspectDevice, readStableId, playSound, playTuyaSound, ringFMDN, provisionEIK, selectedDevice } = useBluetooth()
   const { tools, linkTag } = useTools()
   const { tags, createTag, refreshTags } = useTags()
 
+  const [devices, setDevices] = useState<PairingDevice[]>([])
+  const [scanning, setScanning] = useState(false)
+  const [error, setError] = useState<Error | null>(null)
   const [pairing, setPairing] = useState(false)
   const [beepingId, setBeepingId] = useState<string | null>(null)
   const [inspectingId, setInspectingId] = useState<string | null>(null)
@@ -72,9 +80,39 @@ export default function AirTagScreen() {
     if (contractor?.id) refreshTags(contractor.id)
   }, [contractor?.id])
 
+  // Native scan listeners
   useEffect(() => {
-    return () => { if (scanning) stopScanning() }
-  }, [scanning, stopScanning])
+    const subDevice = addDeviceFoundListener((d: ScannedDevice) => {
+      setDevices(prev => {
+        const now = Date.now()
+        const tagged = { ...d, _lastSeen: now }
+        const idx = prev.findIndex(x => x.id === d.id)
+        if (idx !== -1) {
+          return prev.map((x, i) => i === idx ? { ...x, ...tagged } : x)
+        }
+        return [...prev, tagged]
+      })
+    })
+    const subState = addScanStateListener(({ scanning: s }) => {
+      setScanning(s)
+      if (!s) setDevices([])
+    })
+    return () => { subDevice.remove(); subState.remove() }
+  }, [])
+
+  const startScanning = useCallback(() => {
+    setDevices([])
+    setError(null)
+    startForegroundScan()
+  }, [])
+
+  const stopScanning = useCallback(() => {
+    stopForegroundScan()
+  }, [])
+
+  useEffect(() => {
+    return () => { if (scanning) stopForegroundScan() }
+  }, [scanning])
 
   const openSheet = (device: PairingDevice) => {
     const name = (device.name && device.name !== 'Anonymous') ? device.name : 'Find Easy'
@@ -139,25 +177,28 @@ export default function AirTagScreen() {
             e.stopPropagation()
             setBeepingId(item.id)
             try {
-              // Pega o MAC mais fresco ANTES de parar o scan
+              // Match por stableTagId: MAC para M1P, manufacturerData para FMDN (MAC rotativo)
+              const itemKey = stableTagId(item)
               const freshDevice = [...devices]
-                .filter(d => {
-                  if (d.id === item.id) return true
-                  if (item.name && d.name && d.name === item.name) return true
-                  const dn = d.name?.toLowerCase() ?? ''
-                  const in_ = item.name?.toLowerCase() ?? ''
-                  if (dn.includes('find') && in_.includes('find')) return true
-                  return false
-                })
+                .filter(d => stableTagId(d) === itemKey)
                 .sort((a, b) => ((b as any)._lastSeen ?? 0) - ((a as any)._lastSeen ?? 0))[0]
               const connectId = freshDevice?.id ?? item.id
               console.log(`[Beep] connectId=${connectId} (fresh=${!!freshDevice}, rssi=${freshDevice?.rssi})`)
 
-              // NÃO para scan — o beep de 22:29 que encontrou FE2C era sem parar scan
-
               const tagRec = tags.find(t => t.tag_id === item.id)
                 || tags.find(t => t.eik && item.name?.includes('Find') && t.name?.includes('Find'))
-              await playTuyaSound(connectId, tagRec?.eik ?? undefined)
+
+              const isFmdn = !!(item.name?.toLowerCase().match(/find|airtag|tile/))
+              if (isFmdn) {
+                await playTuyaSound(connectId, tagRec?.eik ?? undefined)
+              } else {
+                const BleTracker = require('@/modules/expo-ble-tracker/src')
+                try {
+                  await BleTracker.ringTag(connectId, 'both')
+                } catch {
+                  try { await playTuyaSound(connectId, tagRec?.eik ?? undefined) } catch { /* ignore */ }
+                }
+              }
             } catch { /* não suporta beep */ } finally {
               setBeepingId(null)
             }
@@ -311,33 +352,32 @@ export default function AirTagScreen() {
     const nameConsumed = new Map<string, number>()
 
     const filtered = devices.filter(d => {
-      if ((d as any)._lastSeen && (now - (d as any)._lastSeen) > 5000) return false
+      if ((d as any)._lastSeen && (now - (d as any)._lastSeen) > 30000) return false
       const tagId = stableTagId(d)
       if (pairedTagIds.has(tagId) || pairedTagIds.has(d.id)) return false
       if ((d as any).isFastPairP23) return true
       const name = d.name?.toLowerCase() ?? ''
       if (name.includes('find') || name.includes('tag') || name.includes('tracker') || name.includes('ty') || name.includes('nut') || name.includes('mk') || name.includes('sensor') || name.includes('moko') || name.includes('beacon')) return true
-      if ((!name || name === 'anonymous') && d.manufacturerData) {
+      if (d.manufacturerData) {
         try {
           const b = Uint8Array.from(atob(d.manufacturerData), c => c.charCodeAt(0))
-          if (b[0] === 0x4C && b[1] === 0x00 && b.length <= 12) return true
+          if (b[0] === 0x4C && b[1] === 0x00 && b.length <= 12) return true // Apple FMDN
+          return true // any device with manufacturer data is likely a tracker
         } catch { /* ignore */ }
       }
       return false
     })
 
-    // Dedup: 1 por nome, mais forte dos últimos 2s
-    const superFresh = filtered.filter(d => (now - ((d as any)._lastSeen || 0)) < 2000)
-    const source = superFresh.length > 0 ? superFresh : filtered
-    const byName = new Map<string, typeof filtered[0]>()
-    for (const d of source) {
-      const key = (d.name || 'unknown').toLowerCase()
-      const existing = byName.get(key)
+    // Dedup: 1 por stableTagId (MAC para M1P, manufacturerData para FMDN)
+    const byId = new Map<string, typeof filtered[0]>()
+    for (const d of filtered) {
+      const key = stableTagId(d)
+      const existing = byId.get(key)
       if (!existing || d.rssi > existing.rssi) {
-        byName.set(key, d)
+        byId.set(key, d)
       }
     }
-    return Array.from(byName.values()).slice(0, 5)
+    return Array.from(byId.values()).slice(0, 5)
   })()
 
   return (

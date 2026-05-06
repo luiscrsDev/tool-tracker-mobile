@@ -142,14 +142,12 @@ class BleForegroundScanner(context: Context) {
 
         seenDevices[deviceId] = DeviceRecord(rssi = rssi, lastReportedMs = now)
 
-        val name: String? = try {
-            device.name
-        } catch (e: SecurityException) {
-            null
-        }
+        val name: String? = result.scanRecord?.deviceName
+            ?: try { device.name } catch (e: SecurityException) { null }
 
         val manufacturerData = extractManufacturerData(result)
 
+        Log.d(TAG, "FG device: $deviceId name=$name mfr=${manufacturerData?.take(20)}")
         listener?.onDeviceFound(deviceId, name, rssi, manufacturerData)
     }
 
