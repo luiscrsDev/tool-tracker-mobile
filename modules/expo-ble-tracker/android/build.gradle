@@ -28,7 +28,6 @@ dependencies {
   implementation "org.jetbrains.kotlin:kotlin-stdlib-jdk7:${safeExtGet('kotlinVersion', '1.9.24')}"
   implementation "com.google.android.gms:play-services-location:21.1.0"
   implementation "org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3"
-  implementation "org.altbeacon:android-beacon-library:2.21.1"
 }
 
 def safeExtGet(prop, fallback) {

@@ -256,10 +256,9 @@ class ExpoBleTrackerModule : Module() {
         appContext.reactContext!!.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
     private fun notifyService() {
-        val ctx = appContext.reactContext ?: return
-        if (isServiceRunning(ctx)) {
-            val intent = Intent(ctx, BleTrackingService::class.java)
-            ctx.startService(intent)
+        BleTrackingService.instance?.apply {
+            loadConfig()
+            restartScan()
         }
     }
 
