@@ -3,7 +3,7 @@ import { View, Text, TouchableOpacity, ScrollView, Alert, ActivityIndicator, Ref
 import { useRouter } from 'expo-router'
 import { Ionicons } from '@expo/vector-icons'
 import * as Location from 'expo-location'
-import { BleManager } from 'react-native-ble-plx'
+
 import { useAuth } from '@/context/AuthContext'
 import { useTools } from '@/context/ToolsContext'
 import { useTags } from '@/context/TagsContext'
@@ -38,7 +38,7 @@ function formatDateTime(dateStr: string): string {
 
 export default function DashboardScreen() {
   const router = useRouter()
-  const { contractor, admin, signOut } = useAuth()
+  const { contractor, worker, signOut } = useAuth()
   const { tools, loading, refreshTools } = useTools()
   const { tags, refreshTags, getTagById } = useTags()
   const { resolveLocationAsync } = useSites()
@@ -64,23 +64,10 @@ export default function DashboardScreen() {
         }
       }
 
-      // Check Bluetooth
-      try {
-        const ble = new BleManager()
-        const state = await ble.state()
-        if (state !== 'PoweredOn') {
-          missing.push('Bluetooth')
-        }
-        ble.destroy()
-      } catch {
-        missing.push('Bluetooth')
-      }
-
       setMissingPermissions(missing)
     }
     checkPermissions()
 
-    // Re-check when app returns from settings
     const interval = setInterval(checkPermissions, 5000)
     return () => clearInterval(interval)
   }, [])
@@ -112,10 +99,12 @@ export default function DashboardScreen() {
       refreshTools(contractor.id)
       refreshTags(contractor.id)
       fetchRecentMovements()
-      // Auto-start background tracking (foreground service + BLE)
-      startBackgroundTracking().then(ok => {
-        if (ok) console.log('[Dashboard] Background tracking ativo')
-      })
+      // Delay to let Activity fully initialize before activating foreground service
+      setTimeout(() => {
+        startBackgroundTracking().then(ok => {
+          if (ok) console.log('[Dashboard] Background tracking ativo')
+        })
+      }, 800)
     }
   }, [contractor?.id])
 
@@ -150,7 +139,9 @@ export default function DashboardScreen() {
 
       // Native-level BLE tracker (handles all scanning + tracking)
       try {
-        BleTracker.addTag(tag.tag_id, tool.id, tool.name, tool.contractor_id)
+        // iOS uses iBeacon MAJOR:MINOR (e.g. "1:1"); Android uses MAC address
+        const nativeTagId = Platform.OS === 'ios' ? (tag.ibeacon_id ?? tag.tag_id) : tag.tag_id
+        BleTracker.addTag(nativeTagId, tool.id, tool.name, tool.contractor_id)
       } catch { /* native module not available */ }
 
       count++
@@ -258,10 +249,10 @@ export default function DashboardScreen() {
           Usuário
         </Text>
         <Text style={{ fontSize: 18, fontWeight: '600' }}>
-          {contractor?.name || admin?.name || 'N/A'}
+          {contractor?.name || worker?.name || 'N/A'}
         </Text>
         <Text style={{ fontSize: 13, color: '#666', marginTop: 6 }}>
-          {contractor?.email || admin?.email || 'N/A'}
+          {contractor?.email || 'N/A'}
         </Text>
       </View>
 

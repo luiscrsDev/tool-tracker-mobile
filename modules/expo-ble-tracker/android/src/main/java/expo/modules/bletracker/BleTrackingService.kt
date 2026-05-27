@@ -198,7 +198,7 @@ class BleTrackingService : Service() {
 
                     Log.d(TAG, "GPS: (${"%.5f".format(lat)}, ${"%.5f".format(lng)}) acc=${accuracy.toInt()}m spd=${"%.0f".format(speed)}km/h")
 
-                    if (accuracy > 50) {
+                    if (accuracy > 150) {
                         Log.d(TAG, "GPS accuracy too low — skipping")
                         return@addOnSuccessListener
                     }
@@ -251,13 +251,16 @@ class BleTrackingService : Service() {
                 val body = JSONObject().apply {
                     put("tool_id", toolId); put("contractor_id", contractorId)
                     put("event", event); put("latitude", lat); put("longitude", lng); put("speed_kmh", speed)
+                    put("platform", "android")
                 }
                 val conn = URL("$supabaseUrl/rest/v1/tool_movements").openConnection() as HttpURLConnection
                 conn.requestMethod = "POST"
                 conn.setRequestProperty("apikey", supabaseKey); conn.setRequestProperty("Authorization", "Bearer $supabaseKey")
                 conn.setRequestProperty("Content-Type", "application/json"); conn.setRequestProperty("Prefer", "return=minimal")
                 conn.doOutput = true; conn.outputStream.write(body.toString().toByteArray())
-                conn.responseCode; conn.disconnect()
+                val status1 = conn.responseCode
+                if (status1 >= 300) Log.w(TAG, "POST tool_movements → $status1")
+                conn.disconnect()
 
                 val locBody = JSONObject().apply {
                     put("last_seen_location", JSONObject().apply {
@@ -270,7 +273,10 @@ class BleTrackingService : Service() {
                 val conn2 = URL("$supabaseUrl/rest/v1/tools?id=eq.$toolId").openConnection() as HttpURLConnection
                 conn2.requestMethod = "PATCH"; conn2.setRequestProperty("apikey", supabaseKey); conn2.setRequestProperty("Authorization", "Bearer $supabaseKey")
                 conn2.setRequestProperty("Content-Type", "application/json"); conn2.setRequestProperty("Prefer", "return=minimal")
-                conn2.doOutput = true; conn2.outputStream.write(locBody.toString().toByteArray()); conn2.responseCode; conn2.disconnect()
+                conn2.doOutput = true; conn2.outputStream.write(locBody.toString().toByteArray())
+                val status2 = conn2.responseCode
+                if (status2 >= 300) Log.w(TAG, "PATCH tools → $status2")
+                conn2.disconnect()
             } catch (e: Exception) { Log.e(TAG, "Save error: ${e.message}") }
         }.start()
     }

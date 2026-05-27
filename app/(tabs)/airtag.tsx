@@ -1,14 +1,15 @@
 import { useEffect, useState, useCallback } from 'react'
 import {
   View, Text, TouchableOpacity, ActivityIndicator,
-  FlatList, Modal, TextInput, ScrollView, KeyboardAvoidingView, Platform,
+  FlatList, Modal, TextInput, ScrollView, KeyboardAvoidingView, Platform, Alert,
 } from 'react-native'
 import { Ionicons } from '@expo/vector-icons'
+import * as Location from 'expo-location'
 import { useBluetooth } from '@/context/BluetoothContext'
 import { useTools } from '@/context/ToolsContext'
 import { useTags } from '@/context/TagsContext'
 import { useAuth } from '@/context/AuthContext'
-import { bondDevice } from '@/modules/expo-fmdn/src'
+
 import {
   startForegroundScan, stopForegroundScan,
   addDeviceFoundListener, addScanStateListener,
@@ -65,6 +66,7 @@ export default function AirTagScreen() {
 
   const [devices, setDevices] = useState<PairingDevice[]>([])
   const [scanning, setScanning] = useState(false)
+  const [scanStatus, setScanStatus] = useState<string | null>(null)
   const [error, setError] = useState<Error | null>(null)
   const [pairing, setPairing] = useState(false)
   const [beepingId, setBeepingId] = useState<string | null>(null)
@@ -83,6 +85,7 @@ export default function AirTagScreen() {
   // Native scan listeners
   useEffect(() => {
     const subDevice = addDeviceFoundListener((d: ScannedDevice) => {
+      setScanStatus(null)
       setDevices(prev => {
         const now = Date.now()
         const tagged = { ...d, _lastSeen: now }
@@ -95,14 +98,31 @@ export default function AirTagScreen() {
     })
     const subState = addScanStateListener(({ scanning: s }) => {
       setScanning(s)
-      if (!s) setDevices([])
+      if (s) setScanStatus(null)
+      else setDevices([])
     })
     return () => { subDevice.remove(); subState.remove() }
   }, [])
 
-  const startScanning = useCallback(() => {
+  const startScanning = useCallback(async () => {
     setDevices([])
     setError(null)
+    setScanStatus(null)
+
+    if (Platform.OS === 'ios') {
+      // iBeacon ranging requires Location permission on iOS
+      const { status } = await Location.requestForegroundPermissionsAsync()
+      if (status !== 'granted') {
+        setScanStatus('Permissão de localização negada — obrigatória para iBeacon no iOS')
+        Alert.alert(
+          'Localização necessária',
+          'O scan de iBeacon no iOS requer permissão de localização. Habilite em Ajustes > LocateTool > Localização.',
+        )
+        return
+      }
+      setScanStatus('Permissão OK — iniciando ranging iBeacon...')
+    }
+
     startForegroundScan()
   }, [])
 
@@ -325,13 +345,16 @@ export default function AirTagScreen() {
 
   const selectedToolName = tools.find(t => t.id === selectedToolId)?.name
 
-  // Tags já registradas — BLE identifiers conhecidos
-  const registeredBleIds = new Set(tags.map(t => t.tag_id))
+  // Tags já registradas — MAC (Android) e iBeacon MAJOR:MINOR (iOS)
+  const registeredBleIds = new Set([
+    ...tags.map(t => t.tag_id),
+    ...tags.filter(t => t.ibeacon_id).map(t => t.ibeacon_id as string),
+  ])
 
   // Ferramentas com tag vinculado
   const pairedTools = tools.filter(t => t.assigned_tag)
 
-  // Scan index (só pra disponíveis)
+  // Scan index — indexed by MAC, manufacturerData, and iBeacon MAJOR:MINOR
   const scannedById = new Map<string, typeof devices[0]>()
   devices.forEach(d => {
     scannedById.set(d.id, d)
@@ -359,11 +382,25 @@ export default function AirTagScreen() {
       const name = d.name?.toLowerCase() ?? ''
       if (name.includes('find') || name.includes('tag') || name.includes('tracker') || name.includes('ty') || name.includes('nut') || name.includes('mk') || name.includes('sensor') || name.includes('moko') || name.includes('beacon')) return true
       if (d.manufacturerData) {
+        const mfr = d.manufacturerData
+        const lmfr = mfr.toLowerCase()
+        // Apple company ID 0x004C: only accept tracker-specific types
+        if (lmfr.startsWith('004c:0215')) return true   // iBeacon (M1P)
+        if (lmfr.startsWith('004c:1219')) return true   // Find My 25-byte payload
+        if (lmfr.startsWith('004c:')) return false      // iPhone/AirPods/Watch/etc — reject
+        // iOS base64 format
         try {
-          const b = Uint8Array.from(atob(d.manufacturerData), c => c.charCodeAt(0))
-          if (b[0] === 0x4C && b[1] === 0x00 && b.length <= 12) return true // Apple FMDN
-          return true // any device with manufacturer data is likely a tracker
-        } catch { /* ignore */ }
+          const b = Uint8Array.from(atob(mfr), c => c.charCodeAt(0))
+          if (b[0] === 0x4C && b[1] === 0x00) {
+            if (b[2] === 0x02 && b[3] === 0x15) return true  // iBeacon
+            if (b[2] === 0x12 && b[3] === 0x19) return true  // Find My
+            return false
+          }
+        } catch { /* not base64 */ }
+        // Non-Apple manufacturer data: only accept if name looks like a tracker (unknown/null)
+        // Rejects named non-tracker devices (TVs, speakers, smart lights, etc.)
+        const n = d.name?.toLowerCase() ?? ''
+        return !n || n === 'unknown'
       }
       return false
     })
@@ -377,7 +414,7 @@ export default function AirTagScreen() {
         byId.set(key, d)
       }
     }
-    return Array.from(byId.values()).slice(0, 5)
+    return Array.from(byId.values()).slice(0, 10)
   })()
 
   return (
@@ -412,6 +449,13 @@ export default function AirTagScreen() {
         </TouchableOpacity>
       </View>
 
+      {/* Scan status (permission / diagnostic) */}
+      {scanStatus && !scanning && (
+        <View style={{ marginHorizontal: 16, marginBottom: 12, backgroundColor: 'rgba(250,204,21,0.08)', borderRadius: 10, padding: 12, borderLeftWidth: 3, borderLeftColor: '#FACC15' }}>
+          <Text style={{ color: '#FACC15', fontSize: 13 }}>ℹ️ {scanStatus}</Text>
+        </View>
+      )}
+
       {/* Error */}
       {error && (
         <View style={{ marginHorizontal: 16, marginBottom: 12, backgroundColor: 'rgba(239,68,68,0.1)', borderRadius: 10, padding: 12, borderLeftWidth: 3, borderLeftColor: '#EF4444' }}>
@@ -441,7 +485,9 @@ export default function AirTagScreen() {
             {tags.map(tag => {
               const linkedTool = tools.find(t => t.assigned_tag === tag.id)
               // Check if this tag is currently visible in BLE scan
+              // iOS iBeacon emits MAJOR:MINOR as id (ibeacon_id), Android emits MAC (tag_id)
               const scannedDevice = scannedById.get(tag.tag_id)
+                ?? (tag.ibeacon_id ? scannedById.get(tag.ibeacon_id) : undefined)
               const inRange = !!scannedDevice
               const rssi = scannedDevice?.rssi ?? -999
               const signalBars = rssi > -60 ? 3 : rssi > -80 ? 2 : 1

@@ -152,7 +152,6 @@ export async function stopBackgroundTracking(): Promise<void> {
     if (isRunning) {
       await Location.stopLocationUpdatesAsync(BACKGROUND_LOCATION_TASK)
     }
-    stopBleMonitoring()
     console.log('[BG] ✅ Background tracking stopped')
   } catch (err) {
     console.error('[BG] ❌ Failed to stop:', err)

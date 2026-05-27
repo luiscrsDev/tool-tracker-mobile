@@ -6,7 +6,7 @@ interface TagsContextType {
   tags: Tag[]
   loading: boolean
   refreshTags: (contractorId: string) => Promise<void>
-  createTag: (tag: { contractor_id: string; name: string; tag_id: string; eik?: string | null }) => Promise<Tag>
+  createTag: (tag: { contractor_id: string; name: string; tag_id: string; eik?: string | null; ibeacon_id?: string | null }) => Promise<Tag>
   deleteTag: (id: string) => Promise<void>
   updateTag: (id: string, updates: Partial<Tag>) => Promise<void>
   getTagById: (id: string) => Tag | undefined
@@ -37,13 +37,14 @@ export function TagsProvider({ children }: { children: React.ReactNode }) {
     }
   }, [])
 
-  const createTag = useCallback(async (tag: { contractor_id: string; name: string; tag_id: string; eik?: string | null }): Promise<Tag> => {
+  const createTag = useCallback(async (tag: { contractor_id: string; name: string; tag_id: string; eik?: string | null; ibeacon_id?: string | null }): Promise<Tag> => {
     // Check if tag_id already exists (re-pairing same device)
     const existing = tags.find(t => t.tag_id === tag.tag_id)
     if (existing) {
       const updates: Partial<Tag> = {}
       if (tag.name !== existing.name) updates.name = tag.name
       if (tag.eik && tag.eik !== existing.eik) updates.eik = tag.eik
+      if (tag.ibeacon_id && tag.ibeacon_id !== existing.ibeacon_id) updates.ibeacon_id = tag.ibeacon_id
       if (Object.keys(updates).length > 0) {
         await updateTag(existing.id, updates)
         return { ...existing, ...updates }
@@ -58,6 +59,7 @@ export function TagsProvider({ children }: { children: React.ReactNode }) {
         name: tag.name,
         tag_id: tag.tag_id,
         eik: tag.eik ?? null,
+        ibeacon_id: tag.ibeacon_id ?? null,
         status: 'active',
       })
       .select('*')

@@ -8,7 +8,9 @@ import android.os.Looper
 import android.util.Log
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import org.json.JSONObject
 
 class ExpoBleTrackerModule : Module() {
@@ -87,6 +89,9 @@ class ExpoBleTrackerModule : Module() {
         // ─── Background Service ─────────────────────────────────────────
         Function("startService") {
             val ctx = appContext.reactContext ?: return@Function false
+            // Cancel any pending debounced scan restart — onStartCommand handles it
+            notifyRunnable?.let { notifyHandler.removeCallbacks(it) }
+            notifyRunnable = null
             val intent = Intent(ctx, BleTrackingService::class.java)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 ctx.startForegroundService(intent)
@@ -181,7 +186,7 @@ class ExpoBleTrackerModule : Module() {
                 val client = MokoGattClient(ctx)
                 success = try {
                     runBlocking {
-                        client.connectAndRing(deviceId, command)
+                        withContext(Dispatchers.IO) { client.connectAndRing(deviceId, command) }
                     }
                     true
                 } catch (e: Exception) {
@@ -213,11 +218,11 @@ class ExpoBleTrackerModule : Module() {
 
             var success = false
             try {
-                Thread.sleep(1000)
-
                 val client = MokoGattClient(ctx)
                 success = try {
-                    runBlocking { client.connectAndAuth(deviceId) }
+                    runBlocking {
+                        withContext(Dispatchers.IO) { client.connectAndAuth(deviceId) }
+                    }
                     true
                 } catch (e: Exception) {
                     Log.w(TAG, "Pair failed: ${e.message}")
@@ -263,15 +268,16 @@ class ExpoBleTrackerModule : Module() {
     private var notifyRunnable: Runnable? = null
 
     private fun notifyService() {
-        BleTrackingService.instance?.loadConfig()
+        val serviceInstance = BleTrackingService.instance ?: return  // service will load config on start
+        serviceInstance.loadConfig()
         if (BleTrackingService.pauseScanning) return
         notifyRunnable?.let { notifyHandler.removeCallbacks(it) }
         notifyRunnable = Runnable {
             if (!BleTrackingService.pauseScanning) {
-                BleTrackingService.instance?.restartScan()
+                serviceInstance.restartScan()
             }
         }
-        notifyHandler.postDelayed(notifyRunnable!!, 500L)
+        notifyHandler.postDelayed(notifyRunnable!!, 2000L)
     }
 
     private fun isServiceRunning(ctx: Context): Boolean {

@@ -1,0 +1,10 @@
+{
+  "name": "expo-ble-tracker",
+  "version": "1.0.0",
+  "description": "BLE iBeacon tracker module for iOS and Android",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "peerDependencies": {
+    "expo": "*"
+  }
+}

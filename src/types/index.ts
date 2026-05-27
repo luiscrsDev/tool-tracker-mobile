@@ -13,7 +13,8 @@ export interface Tag {
   tag_id: string       // BLE identifier (MAC or manufacturer data)
   status: 'active' | 'inactive'
   battery: number | null
-  eik: string | null       // Ephemeral Identity Key (base64) for FMDN ring
+  eik: string | null        // Ephemeral Identity Key (base64) for FMDN ring
+  ibeacon_id: string | null // iBeacon "MAJOR:MINOR" for iOS background detection
   paired_at: string
   created_at: string
 }

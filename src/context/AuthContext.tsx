@@ -103,18 +103,28 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     })
 
     // Edge functions may return data as string or object
-    const data = typeof rawData === 'string' ? JSON.parse(rawData) : rawData
+    let data: any
+    try {
+      data = typeof rawData === 'string' ? JSON.parse(rawData) : rawData
+    } catch {
+      throw new Error('Código inválido ou expirado.')
+    }
 
     if (verifyErr || !data?.success) {
       throw new Error('Código inválido ou expirado.')
     }
 
     // Detect role by checking tables in priority order: master → contractor → worker
-    const [masterResult, contractorResult, workerResult] = await Promise.all([
-      supabase.from('admin_users').select('id, name, email').eq('phone', normalised).maybeSingle(),
-      supabase.from('contractors').select('id, name, email, company, status').eq('phone', normalised).maybeSingle(),
-      supabase.from('app_users').select('id, name, phone').eq('phone', normalised).maybeSingle(),
-    ])
+    let masterResult: any, contractorResult: any, workerResult: any
+    try {
+      ;[masterResult, contractorResult, workerResult] = await Promise.all([
+        supabase.from('admin_users').select('id, name, email').eq('phone', normalised).maybeSingle(),
+        supabase.from('contractors').select('id, name, email, company, status').eq('phone', normalised).maybeSingle(),
+        supabase.from('app_users').select('id, name, phone').eq('phone', normalised).maybeSingle(),
+      ])
+    } catch {
+      throw new Error('Erro de conexão. Tente novamente.')
+    }
 
     if (masterResult.data) {
       const workerData: AppUser = { id: masterResult.data.id, name: masterResult.data.name, phone: normalised }
