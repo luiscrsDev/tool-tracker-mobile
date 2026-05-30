@@ -1,16 +1,30 @@
-const { withAndroidManifest } = require('@expo/config-plugins');
+const { withAndroidManifest, withInfoPlist } = require('@expo/config-plugins');
 
 /**
- * Fix BLUETOOTH/BLUETOOTH_ADMIN permissions so they are visible on Android 12+.
+ * Fix BLUETOOTH/BLUETOOTH_ADMIN permissions so they are visible on Android 12+,
+ * disable Auto Backup on Android, and dedupe iOS Info.plist arrays so
+ * re-running `expo prebuild` without --clean doesn't accumulate duplicate
+ * UIBackgroundModes / UIRequiredDeviceCapabilities entries.
  *
  * react-native-ble-plx injects maxSdkVersion="30" on these permissions, which
  * hides them from PackageManager on API 31+. AltBeacon's PermissionsInspector
  * then cannot find them and refuses to scan.
- *
- * Adding tools:remove="android:maxSdkVersion" at the app-manifest level (highest
- * priority in the merge) strips that attribute from the final merged manifest.
  */
-module.exports = function withBluetoothLegacyPermissions(config) {
+function withIosPlistDedupe(config) {
+  return withInfoPlist(config, (config) => {
+    const dedupeKeys = ['UIBackgroundModes', 'UIRequiredDeviceCapabilities'];
+    for (const key of dedupeKeys) {
+      const arr = config.modResults[key];
+      if (Array.isArray(arr)) {
+        config.modResults[key] = Array.from(new Set(arr));
+      }
+    }
+    return config;
+  });
+}
+
+function withBluetoothLegacyPermissions(config) {
+  config = withIosPlistDedupe(config);
   return withAndroidManifest(config, (config) => {
     const manifest = config.modResults;
     const permissions = manifest.manifest['uses-permission'] || [];
@@ -44,4 +58,6 @@ module.exports = function withBluetoothLegacyPermissions(config) {
 
     return config;
   });
-};
+}
+
+module.exports = withBluetoothLegacyPermissions;

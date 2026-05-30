@@ -1,6 +1,7 @@
 import { DarkTheme, DefaultTheme, ThemeProvider } from '@react-navigation/native'
 import { Stack, useRouter, useSegments } from 'expo-router'
 import { StatusBar } from 'expo-status-bar'
+import * as SplashScreen from 'expo-splash-screen'
 import { ActivityIndicator, View } from 'react-native'
 import { useEffect } from 'react'
 import 'react-native-reanimated'
@@ -26,6 +27,8 @@ function RootLayoutNav() {
   useEffect(() => {
     if (loading) return
 
+    SplashScreen.hideAsync().catch(() => {})
+
     const inAuthGroup = segments[0] === '(auth)'
 
     if (!userRole && !inAuthGroup) {
@@ -41,9 +44,12 @@ function RootLayoutNav() {
     }
   }, [userRole, loading, segments])
 
+  // While the auth session is being restored, keep the splash visible by
+  // returning a covering view. Removing this allowed expo-router to mount
+  // an unmatched route briefly and freeze users with a stored session.
   if (loading) {
     return (
-      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
+      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#ffffff' }}>
         <ActivityIndicator size="large" color="#2563EB" />
       </View>
     )
