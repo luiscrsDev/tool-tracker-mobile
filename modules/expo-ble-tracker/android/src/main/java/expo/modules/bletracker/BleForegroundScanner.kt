@@ -23,6 +23,8 @@ class BleForegroundScanner(context: Context) {
         private const val TAG = "BleTracker"
         private const val RSSI_CHANGE_THRESHOLD = 5
         private const val DEDUP_INTERVAL_MS = 2000L
+        private const val SEEN_DEVICES_MAX = 256
+        private const val SEEN_DEVICES_EVICT_AFTER_MS = 60_000L
     }
 
     private val bluetoothAdapter: BluetoothAdapter? =
@@ -31,10 +33,11 @@ class BleForegroundScanner(context: Context) {
 
     private var scanner: BluetoothLeScanner? = null
     private var listener: ScanListener? = null
-    private var scanning = false
+    @Volatile private var scanning = false
 
     private val seenDevices = mutableMapOf<String, DeviceRecord>()
     private var timeoutRunnable: Runnable? = null
+    private var lastEvictionMs: Long = 0L
 
     private data class DeviceRecord(
         val rssi: Int,
@@ -133,7 +136,7 @@ class BleForegroundScanner(context: Context) {
 
         val previous = seenDevices[deviceId]
         if (previous != null) {
-            val rssiDelta = Math.abs(rssi - previous.rssi)
+            val rssiDelta = kotlin.math.abs(rssi - previous.rssi)
             val elapsed = now - previous.lastReportedMs
             if (rssiDelta < RSSI_CHANGE_THRESHOLD && elapsed < DEDUP_INTERVAL_MS) {
                 return
@@ -141,6 +144,7 @@ class BleForegroundScanner(context: Context) {
         }
 
         seenDevices[deviceId] = DeviceRecord(rssi = rssi, lastReportedMs = now)
+        evictStaleDevicesIfNeeded(now)
 
         val name: String? = result.scanRecord?.deviceName
             ?: try { device.name } catch (e: SecurityException) { null }
@@ -149,6 +153,22 @@ class BleForegroundScanner(context: Context) {
 
         Log.d(TAG, "FG device: $deviceId name=$name mfr=${manufacturerData?.take(20)}")
         listener?.onDeviceFound(deviceId, name, rssi, manufacturerData)
+    }
+
+    private fun evictStaleDevicesIfNeeded(now: Long) {
+        // Cheap eviction: only walk the map when we have grown too large or
+        // we have not pruned in the last 30s, so the hot path stays O(1).
+        if (seenDevices.size < SEEN_DEVICES_MAX && now - lastEvictionMs < 30_000L) return
+        lastEvictionMs = now
+        val cutoff = now - SEEN_DEVICES_EVICT_AFTER_MS
+        val iterator = seenDevices.entries.iterator()
+        var removed = 0
+        while (iterator.hasNext()) {
+            if (iterator.next().value.lastReportedMs < cutoff) {
+                iterator.remove(); removed++
+            }
+        }
+        if (removed > 0) Log.d(TAG, "Evicted $removed stale devices (size=${seenDevices.size})")
     }
 
     private fun extractManufacturerData(result: ScanResult): String? {

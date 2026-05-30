@@ -1,4 +1,6 @@
-import { requireNativeModule, EventEmitter, type Subscription } from 'expo-modules-core'
+import { requireNativeModule, EventEmitter } from 'expo-modules-core'
+
+type Subscription = { remove: () => void }
 
 interface ExpoBleTrackerModule {
   configure(url: string, key: string): void
@@ -16,8 +18,38 @@ interface ExpoBleTrackerModule {
   getServiceStatus(): { isRunning: boolean; tagCount: number; lastScanTime: number }
 }
 
-const NativeModule = requireNativeModule<ExpoBleTrackerModule>('ExpoBleTracker')
-const emitter = new EventEmitter(NativeModule)
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let NativeModule: any
+let emitter: EventEmitter<Record<string, any>>
+let nativeAvailable = false
+
+try {
+  NativeModule = requireNativeModule('ExpoBleTracker')
+  emitter = new EventEmitter(NativeModule)
+  nativeAvailable = true
+} catch (e) {
+  // This is a hard failure in production — without the native module no
+  // tracking happens. We log as error (not warn) so it surfaces in monitoring.
+  console.error('[ExpoBleTracker] Native module unavailable — tracking disabled:', e)
+  const noop = () => {}
+  const noopAsync = async () => false
+  NativeModule = {
+    configure: noop, addTag: noop, removeTag: noop, clearTags: noop,
+    startService: () => false, stopService: () => false,
+    isRunning: () => false, getTagCount: () => 0,
+    startForegroundScan: () => false, stopForegroundScan: () => false,
+    ringTag: noopAsync, pairTag: noopAsync,
+    getServiceStatus: () => ({ isRunning: false, tagCount: 0, lastScanTime: 0 }),
+  }
+  emitter = { addListener: () => ({ remove: noop }) } as any
+}
+
+/**
+ * True if the native module loaded successfully. When false, every call into
+ * this module is a no-op — use this to render an error state in the UI rather
+ * than letting the app pretend to track.
+ */
+export const isNativeAvailable: boolean = nativeAvailable
 
 // ─── Config ──────────────────────────────────────────────────────────────
 

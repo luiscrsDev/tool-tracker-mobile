@@ -31,6 +31,17 @@ module.exports = function withBluetoothLegacyPermissions(config) {
       manifest.manifest.$['xmlns:tools'] = 'http://schemas.android.com/tools';
     }
 
+    // Disable Auto Backup so encrypted-prefs masters + Supabase credentials
+    // are not exfiltrated to the user's Google Drive backup.
+    const application = manifest.manifest.application?.[0];
+    if (application) {
+      application.$['android:allowBackup'] = 'false';
+      application.$['android:fullBackupContent'] = 'false';
+      application.$['tools:replace'] =
+        (application.$['tools:replace'] ? application.$['tools:replace'] + ',' : '') +
+        'android:allowBackup';
+    }
+
     return config;
   });
 };
