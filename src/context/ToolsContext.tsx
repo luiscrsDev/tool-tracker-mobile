@@ -1,7 +1,6 @@
 import React, { createContext, useContext, useState } from 'react'
 import { supabase } from '@/lib/supabase'
 import { CacheService } from '@/lib/cache'
-import { NetworkService } from '@/lib/network'
 import { retryWithBackoff, getErrorMessage } from '@/lib/errors'
 import type { Tool } from '@/types'
 
@@ -35,9 +34,10 @@ export function ToolsProvider({ children }: { children: React.ReactNode }) {
       let data: Tool[] | null = cached || null
 
       if (!cached) {
-        const isOnline = await NetworkService.isOnline()
-        if (!isOnline) throw new Error('Network error')
-
+        // No upfront isOnline gate — NetInfo on iOS frequently reports
+        // isInternetReachable=false even with working Wi-Fi (default probe
+        // hits clients3.google.com which can be blocked or slow). Let the
+        // actual supabase fetch fail and bubble up via the catch.
         const result = await retryWithBackoff(async () => {
           const { data: queryData, error: queryError } = await supabase
             .from('tools')

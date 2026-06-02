@@ -2,7 +2,6 @@ import React, { createContext, useContext, useState, useCallback, useEffect } fr
 import AsyncStorage from '@react-native-async-storage/async-storage'
 import { supabase } from '@/lib/supabase'
 import { CacheService } from '@/lib/cache'
-import { NetworkService } from '@/lib/network'
 import { retryWithBackoff, getErrorMessage } from '@/lib/errors'
 import type { Contractor } from '@/types'
 
@@ -49,13 +48,9 @@ export function AdminProvider({ children }: { children: React.ReactNode }) {
       let alertData: any[] | null = null
 
       if (!cachedContractors) {
-        // Check network before querying
-        const isOnline = await NetworkService.isOnline()
-        if (!isOnline) {
-          throw new Error('Network error')
-        }
-
-        // Cache miss, query from Supabase with retry
+        // No upfront isOnline gate — NetInfo on iOS frequently returns
+        // isInternetReachable=false even with working Wi-Fi. Let supabase
+        // fetch fail naturally if there is no network.
         const data = await retryWithBackoff(async () => {
           const { data: result, error: contractorError } = await supabase
             .from('contractors')

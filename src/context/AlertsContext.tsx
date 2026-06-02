@@ -1,7 +1,6 @@
 import React, { createContext, useContext, useState } from 'react'
 import { supabase } from '@/lib/supabase'
 import { CacheService } from '@/lib/cache'
-import { NetworkService } from '@/lib/network'
 import { retryWithBackoff, getErrorMessage } from '@/lib/errors'
 import type { Alert } from '@/types'
 
@@ -32,13 +31,9 @@ export function AlertsProvider({ children }: { children: React.ReactNode }) {
       let data: Alert[] | null = cached || null
 
       if (!cached) {
-        // Check network before querying
-        const isOnline = await NetworkService.isOnline()
-        if (!isOnline) {
-          throw new Error('Network error')
-        }
-
-        // Cache miss, query Supabase with retry
+        // No upfront isOnline gate — NetInfo on iOS frequently returns
+        // isInternetReachable=false even with working Wi-Fi. Let supabase
+        // fetch fail naturally if there is no network.
         const result = await retryWithBackoff(async () => {
           const { data: queryData, error: queryError } = await supabase
             .from('alerts')
