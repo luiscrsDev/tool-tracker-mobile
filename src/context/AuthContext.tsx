@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useEffect, useState } from 'react'
 import AsyncStorage from '@react-native-async-storage/async-storage'
 import { supabase } from '@/lib/supabase'
+import { setCurrentUser as setBleTrackerUser } from '@/modules/expo-ble-tracker/src'
 import type { Contractor } from '@/types'
 
 export type UserRole = 'contractor' | 'worker' | 'master' | null
@@ -72,6 +73,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       if (session.userRole === 'contractor') setContractor(session.contractor)
       if (session.userRole === 'worker') setWorker(session.worker)
       if (session.userRole === 'master') setWorker(session.worker)
+
+      // Tell the native BLE service which user is logged in so detected_by
+      // gets stamped on every crowd-sourced movement post.
+      const detectorId = session.contractor?.id ?? session.worker?.id
+      if (detectorId) {
+        try { setBleTrackerUser(detectorId) } catch { /* native not loaded */ }
+      }
     } catch (err) {
       console.error('❌ Error restoring session:', err)
     } finally {
@@ -131,6 +139,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       await AsyncStorage.setItem('authSession', JSON.stringify({ userRole: 'master', worker: workerData, lastActiveAt: Date.now() }))
       setUserRole('master')
       setWorker(workerData)
+      try { setBleTrackerUser(workerData.id) } catch {}
       return
     }
 
@@ -140,6 +149,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       await AsyncStorage.setItem('authSession', JSON.stringify({ userRole: 'contractor', contractor: contractorData, lastActiveAt: Date.now() }))
       setUserRole('contractor')
       setContractor(contractorData)
+      try { setBleTrackerUser(contractorData.id) } catch {}
       return
     }
 
@@ -149,6 +159,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       await AsyncStorage.setItem('authSession', JSON.stringify({ userRole: 'worker', worker: workerData, lastActiveAt: Date.now() }))
       setUserRole('worker')
       setWorker(workerData)
+      try { setBleTrackerUser(workerData.id) } catch {}
       return
     }
 
@@ -172,6 +183,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setPendingPhone(null)
     setUserRole('worker')
     setWorker(workerData)
+    try { setBleTrackerUser(workerData.id) } catch {}
   }
 
   const signOut = async () => {

@@ -29,6 +29,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import org.json.JSONArray
 import org.json.JSONObject
@@ -49,6 +51,8 @@ class BleTrackingService : Service() {
         private const val HTTP_CONNECT_TIMEOUT_MS = 10_000
         private const val HTTP_READ_TIMEOUT_MS = 15_000
         private const val OFFLINE_QUEUE_MAX = 200
+        private const val REGISTRY_SYNC_INTERVAL_MS = 15 * 60 * 1000L  // 15 min
+        private const val SCAN_FILTER_LIMIT = 30                       // Samsung max ≈31; stay safe
 
         @Volatile var lastScanTimestamp = 0L
         @Volatile var instance: BleTrackingService? = null
@@ -68,17 +72,21 @@ class BleTrackingService : Service() {
         }
     }
 
-    private val trackedTags = ConcurrentHashMap<String, TrackedTag>()
+    private val trackedTags = ConcurrentHashMap<String, TrackedTag>()       // user's own (from addTag)
+    private val registry = ConcurrentHashMap<String, TrackedTag>()          // global, from bletracker_registry RPC
     private val lastPositions = ConcurrentHashMap<String, Position>()
     private var supabaseUrl = ""
     private var supabaseKey = ""
+    private var currentUserId = ""
 
     @Volatile private var scanning = false
     @Volatile private var hasLocationPermission = false
+    @Volatile private var lastRegistrySync = 0L
 
     private val serviceScope: CoroutineScope =
         CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var pendingLocationCts: CancellationTokenSource? = null
+    private var registrySyncJob: Job? = null
 
     private val bluetoothStateReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -107,7 +115,9 @@ class BleTrackingService : Service() {
                 return
             }
 
-            val tracked = trackedTags[mac] ?: return
+            // Lookup in registry first (global crowd-sourced), then fall back to
+            // user's own tracked tags (works even before first registry sync).
+            val tracked = registry[mac] ?: trackedTags[mac] ?: return
             lastScanTimestamp = System.currentTimeMillis()
 
             // Atomic compute: only proceed if not throttled, mark timestamp immediately to
@@ -127,8 +137,8 @@ class BleTrackingService : Service() {
             }
             if (!shouldFetch) return
 
-            Log.d(TAG, "Detected: ${tracked.toolName} ($mac) rssi=${result.rssi}")
-            // Emit to JS regardless of GPS outcome
+            val isOwn = trackedTags.containsKey(mac)
+            Log.d(TAG, "Detected: ${tracked.toolName} ($mac) rssi=${result.rssi} ${if (isOwn) "own" else "crowd"}")
             ExpoBleTrackerModule.instance?.emitTagDetected(
                 mapOf(
                     "tagId" to mac,
@@ -136,6 +146,7 @@ class BleTrackingService : Service() {
                     "toolName" to tracked.toolName,
                     "rssi" to result.rssi,
                     "timestamp" to now,
+                    "isOwn" to isOwn,
                 )
             )
             fetchGpsAndSave(tracked)
@@ -192,6 +203,7 @@ class BleTrackingService : Service() {
         loadConfig()
         loadLastPositions()
         drainOfflineQueue()
+        startRegistrySync()  // fetches global tags every 15min, populates registry
         startScan()
     }
 
@@ -205,6 +217,8 @@ class BleTrackingService : Service() {
     override fun onDestroy() {
         super.onDestroy()
         instance = null
+        registrySyncJob?.cancel()
+        registrySyncJob = null
         stopScan()
         saveLastPositions()
         pendingLocationCts?.cancel()
@@ -219,9 +233,11 @@ class BleTrackingService : Service() {
 
     internal fun startScan() {
         if (scanning) return
-        if (trackedTags.isEmpty()) {
-            Log.w(TAG, "No tags to track")
-            updateNotification("Sem ferramentas configuradas")
+        // Union of registry + user's own tags. If empty, nothing to scan for yet.
+        val allMacs = (registry.keys + trackedTags.keys).toSet()
+        if (allMacs.isEmpty()) {
+            Log.w(TAG, "No tags in registry yet")
+            updateNotification("Aguardando lista de tags...")
             return
         }
 
@@ -237,8 +253,15 @@ class BleTrackingService : Service() {
             return
         }
 
-        val filters = trackedTags.keys.map { mac ->
-            ScanFilter.Builder().setDeviceAddress(mac).build()
+        // Filter strategy: if registry is small, use HW filter (cheap, fast).
+        // Once we cross the Samsung limit (~31), drop the filter and match in
+        // the callback — every BLE advertisement nearby goes through us, but
+        // we discard MAC misses with a single hashmap lookup. Higher battery
+        // cost, but the only way to detect a growing global registry.
+        val filters: List<ScanFilter>? = if (allMacs.size <= SCAN_FILTER_LIMIT) {
+            allMacs.map { mac -> ScanFilter.Builder().setDeviceAddress(mac).build() }
+        } else {
+            null  // unfiltered scan
         }
 
         val settings = ScanSettings.Builder()
@@ -249,8 +272,9 @@ class BleTrackingService : Service() {
         try {
             scanner.startScan(filters, settings, scanCallback)
             scanning = true
-            Log.i(TAG, "BLE scan started for ${trackedTags.size} tag(s)")
-            updateNotification("Rastreando ${trackedTags.size} ferramenta(s)")
+            val mode = if (filters != null) "filtered" else "filterless"
+            Log.i(TAG, "BLE scan started ($mode) for ${allMacs.size} tag(s) — own=${trackedTags.size} registry=${registry.size}")
+            updateNotification("Rastreando ${allMacs.size} ferramenta(s) globais")
         } catch (e: SecurityException) {
             Log.e(TAG, "BLE scan permission denied: ${e.message}")
         } catch (e: IllegalStateException) {
@@ -394,6 +418,8 @@ class BleTrackingService : Service() {
             put("longitude", lng)
             put("speed_kmh", speed)
             put("platform", "android")
+            // Crowd-sourced detection trail: who walked past the tag.
+            if (currentUserId.isNotEmpty()) put("detected_by", currentUserId)
         }
         serviceScope.launch {
             val ok = postMovement(body)
@@ -517,6 +543,7 @@ class BleTrackingService : Service() {
         val secure = PrefsStore.secure(this)
         supabaseUrl = secure.getString(PrefsStore.KEY_SUPABASE_URL, "") ?: ""
         supabaseKey = secure.getString(PrefsStore.KEY_SUPABASE_KEY, "") ?: ""
+        currentUserId = secure.getString(PrefsStore.KEY_CURRENT_USER_ID, "") ?: ""
 
         val regular = PrefsStore.regular(this)
         trackedTags.clear()
@@ -533,7 +560,92 @@ class BleTrackingService : Service() {
                 )
             }
         } catch (e: Exception) { /* ignore */ }
-        Log.i(TAG, "Config: ${trackedTags.size} tags")
+
+        // Warm-start: load last cached registry from prefs so we can scan even
+        // before the first network sync (e.g. service restarted offline).
+        loadCachedRegistry()
+        Log.i(TAG, "Config: ${trackedTags.size} own + ${registry.size} registry tags, user=${if (currentUserId.isEmpty()) "anon" else currentUserId.take(8)+"…"}")
+    }
+
+    private fun loadCachedRegistry() {
+        val raw = PrefsStore.regular(this).getString(PrefsStore.KEY_REGISTRY, null) ?: return
+        try {
+            val arr = JSONArray(raw)
+            registry.clear()
+            for (i in 0 until arr.length()) {
+                val o = arr.getJSONObject(i)
+                val mac = o.optString("mac").uppercase()
+                if (mac.isEmpty()) continue
+                registry[mac] = TrackedTag(
+                    toolId = o.getString("tool_id"),
+                    toolName = o.optString("tool_name", "?"),
+                    contractorId = o.optString("contractor_id", ""),
+                )
+            }
+        } catch (e: Exception) { Log.w(TAG, "loadCachedRegistry parse failed: ${e.message}") }
+    }
+
+    /** Fetches the global tag registry from Supabase and updates the local cache. */
+    private suspend fun fetchRegistry(): Boolean {
+        if (supabaseUrl.isEmpty() || supabaseKey.isEmpty()) return false
+        if (!supabaseUrl.startsWith("https://")) return false
+        var conn: HttpURLConnection? = null
+        return try {
+            conn = (URL("$supabaseUrl/rest/v1/rpc/bletracker_registry").openConnection() as HttpURLConnection).apply {
+                requestMethod = "POST"
+                connectTimeout = HTTP_CONNECT_TIMEOUT_MS
+                readTimeout = HTTP_READ_TIMEOUT_MS
+                setRequestProperty("apikey", supabaseKey)
+                setRequestProperty("Authorization", "Bearer $supabaseKey")
+                setRequestProperty("Content-Type", "application/json")
+                doOutput = true
+            }
+            conn.outputStream.use { it.write("{}".toByteArray()) }
+            if (conn.responseCode >= 300) {
+                Log.w(TAG, "registry RPC -> ${conn.responseCode}")
+                return false
+            }
+            val body = conn.inputStream.bufferedReader().use { it.readText() }
+            val arr = JSONArray(body)
+            registry.clear()
+            for (i in 0 until arr.length()) {
+                val o = arr.getJSONObject(i)
+                val mac = o.optString("mac").uppercase()
+                if (mac.isEmpty()) continue
+                registry[mac] = TrackedTag(
+                    toolId = o.getString("tool_id"),
+                    toolName = o.optString("tool_name", "?"),
+                    contractorId = o.optString("contractor_id", ""),
+                )
+            }
+            // Persist for warm-start
+            PrefsStore.regular(this).edit()
+                .putString(PrefsStore.KEY_REGISTRY, body)
+                .putLong(PrefsStore.KEY_REGISTRY_FETCHED_AT, System.currentTimeMillis())
+                .apply()
+            lastRegistrySync = System.currentTimeMillis()
+            Log.i(TAG, "Registry synced: ${registry.size} tag(s)")
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "fetchRegistry failed: ${e.message}")
+            false
+        } finally {
+            try { conn?.disconnect() } catch (_: Exception) {}
+        }
+    }
+
+    private fun startRegistrySync() {
+        registrySyncJob?.cancel()
+        registrySyncJob = serviceScope.launch {
+            while (isActive) {
+                val changed = fetchRegistry()
+                if (changed) {
+                    // Re-apply scan filters if registry size changed across the SCAN_FILTER_LIMIT threshold
+                    restartScan()
+                }
+                delay(REGISTRY_SYNC_INTERVAL_MS)
+            }
+        }
     }
 
     private fun loadLastPositions() {

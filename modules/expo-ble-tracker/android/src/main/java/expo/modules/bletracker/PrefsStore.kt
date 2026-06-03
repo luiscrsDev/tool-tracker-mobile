@@ -27,6 +27,9 @@ internal object PrefsStore {
     const val KEY_PENDING_MOVEMENTS = "pending_movements"
     const val KEY_SUPABASE_URL = "supabase_url"
     const val KEY_SUPABASE_KEY = "supabase_key"
+    const val KEY_CURRENT_USER_ID = "current_user_id"     // worker.id or contractor.id of the logged-in app user
+    const val KEY_REGISTRY = "tag_registry"                // JSON cache of bletracker_registry RPC
+    const val KEY_REGISTRY_FETCHED_AT = "registry_fetched_at"
 
     @Volatile private var secureInstance: SharedPreferences? = null
     @Volatile private var migrationAttempted = false

@@ -4,6 +4,7 @@ type Subscription = { remove: () => void }
 
 interface ExpoBleTrackerModule {
   configure(url: string, key: string): void
+  setCurrentUser(userId: string): void
   addTag(tagId: string, toolId: string, toolName: string, contractorId: string): void
   removeTag(tagId: string): void
   clearTags(): void
@@ -34,7 +35,7 @@ try {
   const noop = () => {}
   const noopAsync = async () => false
   NativeModule = {
-    configure: noop, addTag: noop, removeTag: noop, clearTags: noop,
+    configure: noop, setCurrentUser: noop, addTag: noop, removeTag: noop, clearTags: noop,
     startService: () => false, stopService: () => false,
     isRunning: () => false, getTagCount: () => 0,
     startForegroundScan: () => false, stopForegroundScan: () => false,
@@ -55,6 +56,16 @@ export const isNativeAvailable: boolean = nativeAvailable
 
 export function configure(supabaseUrl: string, supabaseKey: string): void {
   NativeModule.configure(supabaseUrl, supabaseKey)
+}
+
+/**
+ * Identifies the currently logged-in app user. Must be called after every
+ * successful login. The native BLE service includes this id as `detected_by`
+ * on every movement posted to Supabase so we know which Locate-Tool user
+ * physically walked past the tag.
+ */
+export function setCurrentUser(userId: string): void {
+  NativeModule.setCurrentUser(userId)
 }
 
 // ─── Tag Management ──────────────────────────────────────────────────────

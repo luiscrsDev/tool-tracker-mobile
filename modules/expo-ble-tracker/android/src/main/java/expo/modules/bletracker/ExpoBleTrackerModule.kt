@@ -60,6 +60,18 @@ class ExpoBleTrackerModule : Module() {
             BleTrackingService.instance?.loadConfig()
         }
 
+        // Identifies the currently logged-in app user. Stored encrypted and
+        // included as `detected_by` on every movement post so we can trace
+        // crowd-sourced detections back to the user that walked past the tag.
+        Function("setCurrentUser") { userId: String ->
+            val ctx = appContext.reactContext ?: return@Function
+            PrefsStore.secure(ctx).edit()
+                .putString(PrefsStore.KEY_CURRENT_USER_ID, userId)
+                .apply()
+            BleTrackingService.instance?.loadConfig()
+            Log.i(TAG, "Current user set: ${userId.take(8)}…")
+        }
+
         // ─── Tag Management ─────────────────────────────────────────────
         Function("addTag") { tagId: String, toolId: String, toolName: String, contractorId: String ->
             val ctx = appContext.reactContext ?: return@Function
