@@ -8,9 +8,12 @@ let KEY_TAGS = "ble_tracked_tags"
 let KEY_SUPABASE_URL = "supabase_url"
 let KEY_SUPABASE_KEY = "supabase_key"
 let KEY_LAST_POSITIONS = "last_positions"
+let KEY_CURRENT_USER_ID = "current_user_id"
+let KEY_REGISTRY = "tag_registry"
 let THROTTLE_SEC: TimeInterval = 110
 let MIN_DIST_M: Double = 15
 let STOP_TIMEOUT: TimeInterval = 4 * 60
+let REGISTRY_SYNC_SEC: TimeInterval = 15 * 60
 
 typealias TagRecord = (toolId: String, toolName: String, contractorId: String)
 
@@ -24,13 +27,16 @@ class IBeaconTracker: NSObject, CLLocationManagerDelegate {
 
     private let locationManager = CLLocationManager()
     private let beaconRegion = CLBeaconRegion(uuid: IBEACON_UUID, identifier: "com.tooltracker.beacons")
-    private var trackedTags: [String: TagRecord] = [:]  // "MAJOR:MINOR" → record
+    private var trackedTags: [String: TagRecord] = [:]    // user's own (from addTag)
+    private var registry: [String: TagRecord] = [:]       // global, from bletracker_registry RPC
     private var lastPositions: [String: [String: Double]] = [:]  // toolId → {lat,lng,event,ts}
     private var supabaseUrl = ""
     private var supabaseKey = ""
+    private var currentUserId = ""
     private var monitoring = false
     private var ranging = false
     private var pendingForegroundScan = false
+    private var registrySyncTimer: Timer?
 
     private var prefs: UserDefaults {
         UserDefaults(suiteName: PREFS_SUITE) ?? UserDefaults.standard
@@ -45,6 +51,17 @@ class IBeaconTracker: NSObject, CLLocationManagerDelegate {
         beaconRegion.notifyEntryStateOnDisplay = true
         loadConfig()
         loadLastPositions()
+        loadCachedRegistry()
+        startRegistrySync()
+    }
+
+    deinit {
+        registrySyncTimer?.invalidate()
+    }
+
+    func setCurrentUser(userId: String) {
+        currentUserId = userId
+        prefs.set(userId, forKey: KEY_CURRENT_USER_ID)
     }
 
     // MARK: - Config
@@ -171,7 +188,8 @@ class IBeaconTracker: NSObject, CLLocationManagerDelegate {
                 ])
             }
 
-            guard let record = trackedTags[key] else { continue }
+            // Lookup in global registry first, fall back to user's own tags.
+            guard let record = registry[key] ?? trackedTags[key] else { continue }
             handleDetection(key: key, record: record, rssi: rssi)
         }
     }
@@ -286,7 +304,7 @@ class IBeaconTracker: NSObject, CLLocationManagerDelegate {
         guard !supabaseUrl.isEmpty, !supabaseKey.isEmpty else { return }
         DispatchQueue.global().async { [weak self] in
             guard let self = self else { return }
-            let body: [String: Any] = [
+            var body: [String: Any] = [
                 "tool_id": record.toolId,
                 "contractor_id": record.contractorId,
                 "event": event,
@@ -295,6 +313,9 @@ class IBeaconTracker: NSObject, CLLocationManagerDelegate {
                 "speed_kmh": speed,
                 "platform": "ios"
             ]
+            if !self.currentUserId.isEmpty {
+                body["detected_by"] = self.currentUserId
+            }
             self.post(path: "/rest/v1/tool_movements", body: body)
 
             let isoDate = ISO8601DateFormatter().string(from: Date())
@@ -348,6 +369,7 @@ class IBeaconTracker: NSObject, CLLocationManagerDelegate {
     private func loadConfig() {
         supabaseUrl = prefs.string(forKey: KEY_SUPABASE_URL) ?? ""
         supabaseKey = prefs.string(forKey: KEY_SUPABASE_KEY) ?? ""
+        currentUserId = prefs.string(forKey: KEY_CURRENT_USER_ID) ?? ""
         if let data = prefs.data(forKey: KEY_TAGS),
            let obj = try? JSONDecoder().decode([String: [String: String]].self, from: data) {
             trackedTags = obj.compactMapValues { d in
@@ -356,6 +378,68 @@ class IBeaconTracker: NSObject, CLLocationManagerDelegate {
                 return (toolId, toolName, cId)
             }
         }
+    }
+
+    // MARK: - Registry (crowd-source)
+
+    private func loadCachedRegistry() {
+        guard let data = prefs.data(forKey: KEY_REGISTRY),
+              let arr = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]]
+        else { return }
+        var next: [String: TagRecord] = [:]
+        for item in arr {
+            guard let key = item["ibeacon_id"] as? String, !key.isEmpty,
+                  let toolId = item["tool_id"] as? String,
+                  let toolName = item["tool_name"] as? String,
+                  let cId = item["contractor_id"] as? String
+            else { continue }
+            next[key] = (toolId, toolName, cId)
+        }
+        registry = next
+    }
+
+    private func startRegistrySync() {
+        registrySyncTimer?.invalidate()
+        // First sync soon (10s), then every REGISTRY_SYNC_SEC.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 10) { [weak self] in self?.fetchRegistry() }
+        registrySyncTimer = Timer.scheduledTimer(withTimeInterval: REGISTRY_SYNC_SEC, repeats: true) { [weak self] _ in
+            self?.fetchRegistry()
+        }
+    }
+
+    private func fetchRegistry() {
+        guard !supabaseUrl.isEmpty, !supabaseKey.isEmpty,
+              supabaseUrl.hasPrefix("https://"),
+              let url = URL(string: supabaseUrl + "/rest/v1/rpc/bletracker_registry")
+        else { return }
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue(supabaseKey, forHTTPHeaderField: "apikey")
+        req.setValue("Bearer \(supabaseKey)", forHTTPHeaderField: "Authorization")
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = "{}".data(using: .utf8)
+        URLSession.shared.dataTask(with: req) { [weak self] data, response, error in
+            guard let self = self else { return }
+            if let error = error {
+                print("[BleTracker] registry fetch error: \(error.localizedDescription)")
+                return
+            }
+            guard let data = data,
+                  let arr = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]]
+            else { return }
+            var next: [String: TagRecord] = [:]
+            for item in arr {
+                guard let key = item["ibeacon_id"] as? String, !key.isEmpty,
+                      let toolId = item["tool_id"] as? String,
+                      let toolName = item["tool_name"] as? String,
+                      let cId = item["contractor_id"] as? String
+                else { continue }
+                next[key] = (toolId, toolName, cId)
+            }
+            DispatchQueue.main.async { self.registry = next }
+            self.prefs.set(data, forKey: KEY_REGISTRY)
+            print("[BleTracker] Registry synced: \(next.count) tag(s)")
+        }.resume()
     }
 
     private func saveTags() {

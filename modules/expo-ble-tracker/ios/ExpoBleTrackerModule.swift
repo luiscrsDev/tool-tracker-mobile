@@ -34,6 +34,12 @@ public class ExpoBleTrackerModule: Module {
             self.tracker.configure(url: url, key: key)
         }
 
+        // Identifies the currently logged-in app user. Included as detected_by
+        // on every movement post so we can trace crowd-sourced detections.
+        Function("setCurrentUser") { (userId: String) in
+            self.tracker.setCurrentUser(userId: userId)
+        }
+
         // ─── Tag Management ─────────────────────────────────────────────
         Function("addTag") { (tagId: String, toolId: String, toolName: String, contractorId: String) in
             self.tracker.addTag(tagId: tagId, toolId: toolId, toolName: toolName, contractorId: contractorId)
